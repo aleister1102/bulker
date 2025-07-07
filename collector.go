@@ -19,7 +19,7 @@ func NewResultCollector(outputDir string) *ResultCollector {
 }
 
 func (rc *ResultCollector) MergeResults() error {
-	// Tìm tất cả result files
+	// Find all result files
 	pattern := filepath.Join(rc.outputDir, "result_*.txt")
 	resultFiles, err := filepath.Glob(pattern)
 	if err != nil {
@@ -31,10 +31,10 @@ func (rc *ResultCollector) MergeResults() error {
 		return nil
 	}
 
-	// Sắp xếp files theo thứ tự
+	// Sort files in order
 	sort.Strings(resultFiles)
 
-	// Tạo merged result file
+	// Create merged result file
 	mergedFile := filepath.Join(rc.outputDir, "merged_result.txt")
 	output, err := os.Create(mergedFile)
 	if err != nil {

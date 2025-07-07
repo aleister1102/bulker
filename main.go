@@ -10,13 +10,13 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "bulker",
 	Short: "Parallel processing tool using tmux",
-	Long:  `Tool để chạy command line tools đa luồng thông qua tmux detach với khả năng chia file input và xử lý interrupt`,
+	Long:  `Tool for running command line tools in parallel through tmux detach with input file splitting and interrupt handling`,
 }
 
 var runCmd = &cobra.Command{
 	Use:   "run [command]",
-	Short: "Chạy command parallel",
-	Long:  `Chia input file và chạy command trên nhiều luồng sử dụng tmux`,
+	Short: "Run command in parallel",
+	Long:  `Split input file and run command on multiple threads using tmux`,
 	Args:  cobra.MinimumNArgs(1),
 	Run:   runCommand,
 }
@@ -33,7 +33,7 @@ var (
 func init() {
 	rootCmd.AddCommand(runCmd)
 
-	runCmd.Flags().StringVarP(&inputFile, "input", "i", "", "Inpzt file path (required)")
+	runCmd.Flags().StringVarP(&inputFile, "input", "i", "", "Input file path (required)")
 	runCmd.Flags().StringVarP(&outputDir, "output", "o", "output", "Output directory")
 	runCmd.Flags().IntVarP(&workers, "workers", "w", 4, "Number of parallel workers")
 	runCmd.Flags().IntVarP(&chunkSize, "chunk-size", "c", 1000, "Chunk size (lines)")

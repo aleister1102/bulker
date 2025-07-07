@@ -22,12 +22,12 @@ func NewFileSplitter(inputFile, outputDir string, chunkSize int) *FileSplitter {
 }
 
 func (fs *FileSplitter) Split() ([]string, error) {
-	// Tạo output directory
+	// Create output directory
 	if err := os.MkdirAll(fs.outputDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	// Mở input file
+	// Open input file
 	file, err := os.Open(fs.inputFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open input file: %w", err)
@@ -43,7 +43,7 @@ func (fs *FileSplitter) Split() ([]string, error) {
 	var currentWriter *bufio.Writer
 
 	for scanner.Scan() {
-		// Tạo chunk mới khi cần
+		// Create new chunk when needed
 		if lineCount%fs.chunkSize == 0 {
 			if currentChunk != nil {
 				currentWriter.Flush()
@@ -62,14 +62,14 @@ func (fs *FileSplitter) Split() ([]string, error) {
 			chunkIndex++
 		}
 
-		// Ghi line vào chunk hiện tại
+		// Write line to current chunk
 		if _, err := currentWriter.WriteString(scanner.Text() + "\n"); err != nil {
 			return nil, fmt.Errorf("failed to write to chunk file: %w", err)
 		}
 		lineCount++
 	}
 
-	// Đóng chunk cuối cùng
+	// Close last chunk
 	if currentChunk != nil {
 		currentWriter.Flush()
 		currentChunk.Close()

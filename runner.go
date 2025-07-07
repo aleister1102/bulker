@@ -68,26 +68,26 @@ func (r *Runner) Run() error {
 		return r.cleanup()
 	}
 
-	// Chia file input thành chunks
+	// Split input file into chunks
 	chunkFiles, err := r.splitter.Split()
 	if err != nil {
 		return fmt.Errorf("failed to split input file: %w", err)
 	}
 
-	// Tạo tasks
+	// Create tasks
 	r.createTasks(chunkFiles)
 
-	// Tạo tmux session
+	// Create tmux session
 	if err := r.createTmuxSession(); err != nil {
 		return fmt.Errorf("failed to create tmux session: %w", err)
 	}
 
-	// Chạy tasks
+	// Run tasks
 	if err := r.runTasks(); err != nil {
 		return fmt.Errorf("failed to run tasks: %w", err)
 	}
 
-	// Monitor và wait for completion
+	// Monitor and wait for completion
 	if err := r.monitor(); err != nil {
 		return fmt.Errorf("monitoring failed: %w", err)
 	}
@@ -162,7 +162,7 @@ func (r *Runner) runTask(taskIndex int) {
 	task.StartTime = time.Now()
 	r.mu.Unlock()
 
-	// Tạo command
+	// Create command
 	fullCommand := r.buildCommand(task.ChunkFile, task.ResultFile)
 
 	if runtime.GOOS == "windows" {
@@ -175,7 +175,7 @@ func (r *Runner) runTask(taskIndex int) {
 func (r *Runner) runTaskWindows(taskIndex int, fullCommand string) {
 	task := &r.tasks[taskIndex]
 
-	// Parse command và arguments
+	// Parse command and arguments
 	cmdParts := strings.Fields(fullCommand)
 	if len(cmdParts) == 0 {
 		fmt.Printf("Empty command for task %d\n", task.ID)
@@ -183,26 +183,27 @@ func (r *Runner) runTaskWindows(taskIndex int, fullCommand string) {
 		return
 	}
 
-	// Tạo cmd
-	cmd := exec.Command(cmdParts[0], cmdParts[1:]...)
+	// Create cmd
+	var cmd *exec.Cmd
 
-	// Redirect output để capture kết quả
+	// Redirect output to capture results
 	if strings.Contains(fullCommand, ">") {
-		// Nếu command có redirect, chạy qua shell
+		// If command has redirect, run through shell
 		cmd = exec.Command("cmd", "/C", fullCommand)
 	} else {
-		// Nếu không có redirect, tạo output file
+		// If no redirect, create output file
 		outputFile, err := os.Create(task.ResultFile)
 		if err != nil {
 			fmt.Printf("Failed to create output file for task %d: %v\n", task.ID, err)
 			r.updateTaskStatus(taskIndex, TaskFailed)
 			return
 		}
+		cmd = exec.Command(cmdParts[0], cmdParts[1:]...)
 		cmd.Stdout = outputFile
 		defer outputFile.Close()
 	}
 
-	// Chạy command
+	// Run command
 	if err := cmd.Start(); err != nil {
 		fmt.Printf("Failed to start command for task %d: %v\n", task.ID, err)
 		r.updateTaskStatus(taskIndex, TaskFailed)
@@ -226,7 +227,7 @@ func (r *Runner) runTaskWindows(taskIndex int, fullCommand string) {
 func (r *Runner) runTaskUnix(taskIndex int, fullCommand string) {
 	task := &r.tasks[taskIndex]
 
-	// Tạo tmux window
+	// Create tmux window
 	windowCmd := exec.Command("tmux", "new-window", "-t", r.config.SessionName, "-n", task.WindowName)
 	if err := windowCmd.Run(); err != nil {
 		fmt.Printf("Failed to create tmux window for task %d: %v\n", task.ID, err)
@@ -234,7 +235,7 @@ func (r *Runner) runTaskUnix(taskIndex int, fullCommand string) {
 		return
 	}
 
-	// Chạy command trong tmux window
+	// Run command in tmux window
 	sendCmd := exec.Command("tmux", "send-keys", "-t", fmt.Sprintf("%s:%s", r.config.SessionName, task.WindowName), fullCommand, "Enter")
 	if err := sendCmd.Run(); err != nil {
 		fmt.Printf("Failed to send command to tmux window for task %d: %v\n", task.ID, err)
@@ -248,10 +249,10 @@ func (r *Runner) runTaskUnix(taskIndex int, fullCommand string) {
 func (r *Runner) buildCommand(chunkFile, resultFile string) string {
 	var cmdParts []string
 
-	// Thêm command chính
+	// Add main command
 	cmdParts = append(cmdParts, r.config.Command)
 
-	// Thêm arguments, thay {input} và {output} placeholders
+	// Add arguments, replace {input} and {output} placeholders
 	for _, arg := range r.config.CommandArgs {
 		arg = strings.ReplaceAll(arg, "{input}", chunkFile)
 		arg = strings.ReplaceAll(arg, "{output}", resultFile)
@@ -288,7 +289,7 @@ func (r *Runner) checkAllCompleted() bool {
 	for i := range r.tasks {
 		task := &r.tasks[i]
 
-		// Kiểm tra xem file result đã tồn tại chưa
+		// Check if result file exists
 		if task.Status == TaskRunning {
 			if _, err := os.Stat(task.ResultFile); err == nil {
 				r.updateTaskStatus(i, TaskCompleted)
