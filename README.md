@@ -1,60 +1,60 @@
 # Bulker - Parallel Processing Tool
 
-Tool để chạy command line tools đa luồng thông qua tmux detach với khả năng chia file input và xử lý interrupt.
+Tool for running command line tools in parallel through tmux detach with input file splitting and interrupt handling capabilities.
 
-## Tính năng
+## Features
 
-- Chia file input thành chunks để xử lý parallel
-- Chạy commands thông qua tmux detach (background)
-- Hỗ trợ đa luồng với giới hạn số workers
-- Interrupt handling để thu thập kết quả partial
-- Merge kết quả từ các chunks
-- Cleanup mode để thu thập kết quả từ run bị gián đoạn
+- Split input file into chunks for parallel processing
+- Run commands through tmux detach (background)
+- Support multi-threading with worker limits
+- Interrupt handling to collect partial results
+- Merge results from chunks
+- Cleanup mode to collect results from interrupted runs
 
-## Cài đặt
+## Installation
 
 ```bash
 go mod tidy
 go build -o bulker
 ```
 
-## Sử dụng
+## Usage
 
-### Cú pháp cơ bản
+### Basic Syntax
 
 ```bash
 ./bulker run [command] --input [input_file] [options]
 ```
 
-### Tham số
+### Parameters
 
-- `--input, -i`: File input (required)
-- `--output, -o`: Thư mục output (default: "output")
-- `--workers, -w`: Số workers parallel (default: 4)
-- `--chunk-size, -c`: Kích thước chunk (số lines) (default: 1000)
-- `--session, -s`: Tên tmux session (default: "bulker")
-- `--cleanup`: Chế độ cleanup - thu thập kết quả từ run bị gián đoạn
+- `--input, -i`: Input file path (required)
+- `--output, -o`: Output directory (default: "output")
+- `--workers, -w`: Number of parallel workers (default: 4)
+- `--chunk-size, -c`: Chunk size (lines) (default: 1000)
+- `--session, -s`: Tmux session name (default: "bulker")
+- `--cleanup`: Cleanup mode - collect results from interrupted run
 
-### Placeholders trong command
+### Placeholders in Command
 
-- `{input}`: Được thay thế bằng đường dẫn chunk file
-- `{output}`: Được thay thế bằng đường dẫn result file
+- `{input}`: Replaced with chunk file path
+- `{output}`: Replaced with result file path
 
-### Ví dụ
+### Examples
 
-#### Chạy grep parallel
+#### Run grep in parallel
 
 ```bash
 ./bulker run grep --input data.txt --workers 8 --chunk-size 500 -- -i "pattern" {input} > {output}
 ```
 
-#### Chạy custom processing script
+#### Run custom processing script
 
 ```bash
 ./bulker run python --input big_data.txt --workers 4 -- process.py {input} {output}
 ```
 
-#### Cleanup sau khi bị interrupt
+#### Cleanup after interrupt
 
 ```bash
 ./bulker run --cleanup --output output_dir
@@ -62,14 +62,14 @@ go build -o bulker
 
 ## Workflow
 
-1. Tool chia file input thành chunks
-2. Tạo tmux session mới
-3. Chạy command trên từng chunk trong tmux windows riêng biệt
-4. Monitor progress và báo cáo status
-5. Khi hoàn thành, merge tất cả result files
-6. Nếu bị interrupt (Ctrl+C), cleanup và merge kết quả partial
+1. Tool splits input file into chunks
+2. Creates new tmux session (or uses background processes on Windows)
+3. Runs command on each chunk in separate tmux windows/processes
+4. Monitors progress and reports status
+5. When completed, merges all result files
+6. If interrupted (Ctrl+C), cleanup and merge partial results
 
-## Cấu trúc output
+## Output Structure
 
 ```
 output/
@@ -80,24 +80,29 @@ output/
 └── merged_result.txt # Final merged result
 ```
 
-## Quản lý tmux
+## Tmux Management
 
-Tool tạo một tmux session với tên được chỉ định (default: "bulker") và tạo windows riêng cho mỗi worker. Bạn có thể:
+Tool creates a tmux session with specified name (default: "bulker") and creates separate windows for each worker. You can:
 
 ```bash
-# Xem sessions
+# View sessions
 tmux list-sessions
 
-# Attach vào session để monitor
+# Attach to session for monitoring
 tmux attach-session -t bulker
 
-# Xem các windows
+# View windows
 tmux list-windows -t bulker
 ```
 
-## Xử lý lỗi
+## Error Handling
 
-- Nếu tmux không có sẵn, tool sẽ báo lỗi
-- Nếu file input không tồn tại, tool sẽ báo lỗi
-- Nếu command thất bại trên một chunk, tool sẽ báo warning và tiếp tục
-- Khi nhận interrupt signal, tool sẽ cleanup và merge kết quả đã có 
+- If tmux is not available, tool will report error (Unix) or use background processes (Windows)
+- If input file does not exist, tool will report error
+- If command fails on a chunk, tool will report warning and continue
+- When receiving interrupt signal, tool will cleanup and merge available results
+
+## Platform Support
+
+- **Unix/Linux/macOS**: Uses tmux for parallel processing
+- **Windows**: Uses background processes instead of tmux 
