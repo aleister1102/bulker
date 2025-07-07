@@ -1,5 +1,0 @@
-line 6 - fig
-line 7 - grape
-line 8 - honeydew
-line 9 - kiwi
-line 10 - lemon
