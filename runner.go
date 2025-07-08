@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,7 +24,6 @@ type RunnerConfig struct {
 
 type Runner struct {
 	config        RunnerConfig
-	splitter      *FileSplitter
 	signalHandler *SignalHandler
 	tasks         []Task
 	mu            sync.RWMutex
@@ -31,7 +31,7 @@ type Runner struct {
 	outputMutex   sync.Mutex
 	outputPath    string
 	sessionName   string
-	chunkFiles    []string // Store chunk files for cleanup
+	inputLines    []string // Store input lines directly
 }
 
 type Task struct {
@@ -55,7 +55,6 @@ const (
 func NewRunner(config RunnerConfig) *Runner {
 	return &Runner{
 		config:        config,
-		splitter:      NewFileSplitter(config.InputFile, config.OutputDir, config.Workers),
 		signalHandler: NewSignalHandler(),
 		outputPath:    filepath.Join(config.OutputDir, "output.txt"),
 		sessionName:   createSessionName(config.Command),
@@ -104,6 +103,51 @@ func normalizeSessionName(command string) string {
 	return normalized
 }
 
+func (r *Runner) readInputFile() error {
+	file, err := os.Open(r.config.InputFile)
+	if err != nil {
+		return fmt.Errorf("failed to open input file: %w", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	r.inputLines = make([]string, 0)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line != "" { // Only add non-empty lines
+			r.inputLines = append(r.inputLines, line)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading input file: %w", err)
+	}
+
+	fmt.Printf("Read %d lines from input file: %v\n", len(r.inputLines), r.inputLines)
+	return nil
+}
+
+func (r *Runner) parseLineRange(rangeStr string) (int, int, error) {
+	// Parse format: "lines_start_end"
+	parts := strings.Split(rangeStr, "_")
+	if len(parts) != 3 || parts[0] != "lines" {
+		return 0, 0, fmt.Errorf("invalid range format: %s", rangeStr)
+	}
+
+	startLine, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid start line: %s", parts[1])
+	}
+
+	endLine, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid end line: %s", parts[2])
+	}
+
+	return startLine, endLine, nil
+}
+
 func sessionExists(sessionName string) bool {
 	if runtime.GOOS == "windows" {
 		return false // Windows doesn't use tmux
@@ -130,17 +174,14 @@ func (r *Runner) Run() error {
 	}
 	defer r.outputFile.Close()
 
-	// Split input file into chunks
-	r.chunkFiles, err = r.splitter.Split()
+	// Read input file directly into memory
+	err = r.readInputFile()
 	if err != nil {
-		return fmt.Errorf("failed to split input file: %w", err)
+		return fmt.Errorf("failed to read input file: %w", err)
 	}
 
-	// Wait a bit to ensure all files are flushed
-	time.Sleep(100 * time.Millisecond)
-
-	// Create tasks
-	r.createTasks(r.chunkFiles)
+	// Create tasks based on line ranges
+	r.createTasks()
 
 	// Create tmux session
 	if err := r.createTmuxSession(); err != nil {
@@ -157,44 +198,60 @@ func (r *Runner) Run() error {
 		return fmt.Errorf("monitoring failed: %w", err)
 	}
 
-	// Clean up chunk files
-	r.cleanupChunkFiles()
+	// No chunk files to clean up anymore
+	fmt.Println("Processing completed, no cleanup needed")
 
 	fmt.Printf("All tasks completed successfully! Output written to: %s\n", r.outputPath)
 	return nil
 }
 
-func (r *Runner) createTasks(chunkFiles []string) {
+func (r *Runner) createTasks() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.tasks = make([]Task, len(chunkFiles))
-	for i, chunkFile := range chunkFiles {
-		r.tasks[i] = Task{
-			ID:         i,
-			ChunkFile:  chunkFile,
-			WindowName: fmt.Sprintf("worker_%d", i),
-			Status:     TaskPending,
+	totalLines := len(r.inputLines)
+	if totalLines == 0 {
+		fmt.Println("No lines to process")
+		return
+	}
+
+	// Calculate chunk size based on workers
+	chunkSize := totalLines / r.config.Workers
+	if totalLines%r.config.Workers != 0 {
+		chunkSize++ // Round up to ensure all lines are included
+	}
+
+	// Ensure minimum chunk size of 1
+	if chunkSize < 1 {
+		chunkSize = 1
+	}
+
+	fmt.Printf("Total lines: %d, Workers: %d, Chunk size: %d\n", totalLines, r.config.Workers, chunkSize)
+
+	// Create tasks based on line ranges
+	r.tasks = make([]Task, 0, r.config.Workers)
+	taskID := 0
+
+	for startLine := 0; startLine < totalLines; startLine += chunkSize {
+		endLine := startLine + chunkSize
+		if endLine > totalLines {
+			endLine = totalLines
 		}
+
+		fmt.Printf("Creating task %d: lines %d-%d (%d lines)\n", taskID, startLine, endLine-1, endLine-startLine)
+		r.tasks = append(r.tasks, Task{
+			ID:         taskID,
+			ChunkFile:  fmt.Sprintf("lines_%d_%d", startLine, endLine-1), // Store line range info
+			WindowName: fmt.Sprintf("worker_%d", taskID),
+			Status:     TaskPending,
+		})
+		taskID++
 	}
 }
 
 func (r *Runner) createTmuxSession() error {
-	if runtime.GOOS == "windows" {
-		fmt.Println("Windows detected, using background processes instead of tmux")
-		return nil
-	}
-
-	// Kill existing session if exists
-	exec.Command("tmux", "kill-session", "-t", r.sessionName).Run()
-
-	// Create new session
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", r.sessionName)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to create tmux session: %w", err)
-	}
-
-	fmt.Printf("Created tmux session: %s\n", r.sessionName)
+	// No longer creating tmux sessions - all tasks run directly and output to shared file
+	fmt.Println("Running tasks directly with shared output file")
 	return nil
 }
 
@@ -237,27 +294,21 @@ func (r *Runner) runTask(taskIndex int) {
 func (r *Runner) runTaskWindows(taskIndex int, fullCommand string) {
 	task := &r.tasks[taskIndex]
 
-	// For Windows, handle echo command specially by running each line individually
+	// For Windows, handle echo command specially by processing lines directly from memory
 	if r.config.Command == "echo" {
-		// Read chunk file content
-		content, err := os.ReadFile(task.ChunkFile)
+		// Parse line range from task.ChunkFile (format: "lines_start_end")
+		startLine, endLine, err := r.parseLineRange(task.ChunkFile)
 		if err != nil {
-			fmt.Printf("Failed to read chunk file %s: %v\n", task.ChunkFile, err)
+			fmt.Printf("Failed to parse line range %s: %v\n", task.ChunkFile, err)
 			r.updateTaskStatus(taskIndex, TaskFailed)
 			return
 		}
 
-		// Convert to string and remove trailing newline
-		contentStr := strings.TrimSpace(string(content))
-		lines := strings.Split(contentStr, "\n")
+		fmt.Printf("Started task %d: %s (processing lines %d-%d)\n", task.ID, task.WindowName, startLine, endLine)
 
-		fmt.Printf("Started task %d: %s\n", task.ID, task.WindowName)
-
-		// Echo each line individually
-		for _, line := range lines {
-			if line != "" {
-				r.writeToOutput(line)
-			}
+		// Process each line from memory and write directly to shared output file
+		for i := startLine; i <= endLine && i < len(r.inputLines); i++ {
+			r.writeToOutput(r.inputLines[i])
 		}
 
 		fmt.Printf("Task %d completed successfully\n", task.ID)
@@ -265,7 +316,7 @@ func (r *Runner) runTaskWindows(taskIndex int, fullCommand string) {
 		return
 	}
 
-	// Run command through cmd.exe for Windows compatibility
+	// For other commands, run through cmd.exe and capture output
 	cmd := exec.Command("cmd", "/c", fullCommand)
 
 	// Create pipes to capture output
@@ -285,7 +336,7 @@ func (r *Runner) runTaskWindows(taskIndex int, fullCommand string) {
 
 	fmt.Printf("Started task %d: %s (PID: %d)\n", task.ID, task.WindowName, cmd.Process.Pid)
 
-	// Read output and write to shared file
+	// Read output line by line and write directly to shared output file
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -294,6 +345,7 @@ func (r *Runner) runTaskWindows(taskIndex int, fullCommand string) {
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			line := scanner.Text()
+			// Write each line immediately to the shared output file
 			r.writeToOutput(line)
 		}
 	}()
@@ -313,97 +365,81 @@ func (r *Runner) runTaskWindows(taskIndex int, fullCommand string) {
 func (r *Runner) runTaskUnix(taskIndex int, fullCommand string) {
 	task := &r.tasks[taskIndex]
 
-	// Create tmux window
-	windowCmd := exec.Command("tmux", "new-window", "-t", r.sessionName, "-n", task.WindowName)
-	if err := windowCmd.Run(); err != nil {
-		fmt.Printf("Failed to create tmux window for task %d: %v\n", task.ID, err)
+	// For Unix, handle echo command specially by processing lines directly from memory
+	if r.config.Command == "echo" {
+		// Parse line range from task.ChunkFile (format: "lines_start_end")
+		startLine, endLine, err := r.parseLineRange(task.ChunkFile)
+		if err != nil {
+			fmt.Printf("Failed to parse line range %s: %v\n", task.ChunkFile, err)
+			r.updateTaskStatus(taskIndex, TaskFailed)
+			return
+		}
+
+		fmt.Printf("Started task %d: %s (processing lines %d-%d)\n", task.ID, task.WindowName, startLine, endLine)
+
+		// Process each line from memory and write directly to shared output file
+		for i := startLine; i <= endLine && i < len(r.inputLines); i++ {
+			r.writeToOutput(r.inputLines[i])
+		}
+
+		fmt.Printf("Task %d completed successfully\n", task.ID)
+		r.updateTaskStatus(taskIndex, TaskCompleted)
+		return
+	}
+
+	// For other commands, run the command directly and capture output
+	cmd := exec.Command("bash", "-c", fullCommand)
+
+	// Create pipes to capture output
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		fmt.Printf("Failed to create stdout pipe for task %d: %v\n", task.ID, err)
 		r.updateTaskStatus(taskIndex, TaskFailed)
 		return
 	}
 
-	// Create a pipe to capture output from tmux
-	tmpFile := fmt.Sprintf("/tmp/bulker_output_%d_%d.txt", task.ID, time.Now().UnixNano())
-	commandWithRedirect := fmt.Sprintf("(%s) > %s 2>&1; echo \"TASK_COMPLETED\" >> %s", fullCommand, tmpFile, tmpFile)
-
-	// Run command in tmux window
-	sendCmd := exec.Command("tmux", "send-keys", "-t", fmt.Sprintf("%s:%s", r.sessionName, task.WindowName), commandWithRedirect, "Enter")
-	if err := sendCmd.Run(); err != nil {
-		fmt.Printf("Failed to send command to tmux window for task %d: %v\n", task.ID, err)
+	// Start command
+	if err := cmd.Start(); err != nil {
+		fmt.Printf("Failed to start command for task %d: %v\n", task.ID, err)
 		r.updateTaskStatus(taskIndex, TaskFailed)
 		return
 	}
 
-	fmt.Printf("Started task %d: %s\n", task.ID, task.WindowName)
+	fmt.Printf("Started task %d: %s (PID: %d)\n", task.ID, task.WindowName, cmd.Process.Pid)
 
-	// Monitor the temp file and copy output to shared file
+	// Read output line by line and write directly to shared output file
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
-		defer func() {
-			if _, err := os.Stat(tmpFile); err == nil {
-				os.Remove(tmpFile) // Clean up temp file
-			}
-		}()
-
-		// Wait for command to complete by checking for completion marker
-		for {
-			time.Sleep(1 * time.Second)
-			if content, err := os.ReadFile(tmpFile); err == nil {
-				if strings.Contains(string(content), "TASK_COMPLETED") {
-					// Remove the completion marker and write content
-					lines := strings.Split(string(content), "\n")
-					var outputLines []string
-					for _, line := range lines {
-						if line != "TASK_COMPLETED" && line != "" {
-							outputLines = append(outputLines, line)
-						}
-					}
-					if len(outputLines) > 0 {
-						r.writeToOutput(strings.Join(outputLines, "\n"))
-					}
-					r.updateTaskStatus(taskIndex, TaskCompleted)
-					break
-				}
-			}
+		defer wg.Done()
+		defer stdout.Close()
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			// Write each line immediately to the shared output file
+			r.writeToOutput(line)
 		}
 	}()
+
+	// Wait for command to complete
+	if err := cmd.Wait(); err != nil {
+		fmt.Printf("Task %d failed: %v\n", task.ID, err)
+		r.updateTaskStatus(taskIndex, TaskFailed)
+	} else {
+		// Wait for output goroutine to finish before marking as completed
+		wg.Wait()
+		fmt.Printf("Task %d completed successfully\n", task.ID)
+		r.updateTaskStatus(taskIndex, TaskCompleted)
+	}
 }
 
 func (r *Runner) buildCommand(chunkFile string) string {
 	var cmdParts []string
 
-	// Special handling for echo command
+	// For echo command, we handle it directly in runTaskWindows/runTaskUnix
+	// so we don't need to build actual commands for it
 	if r.config.Command == "echo" {
-		// For echo, read file content and pass it as argument
-		content, err := os.ReadFile(chunkFile)
-		if err != nil {
-			fmt.Printf("Failed to read chunk file %s: %v\n", chunkFile, err)
-			return "echo ERROR_READING_FILE"
-		}
-
-		// Convert to string and remove trailing newline
-		contentStr := strings.TrimSpace(string(content))
-
-		// Split by lines and echo each line
-		lines := strings.Split(contentStr, "\n")
-		var commands []string
-		for _, line := range lines {
-			if line != "" {
-				if runtime.GOOS == "windows" {
-					commands = append(commands, fmt.Sprintf("echo %s", line))
-				} else {
-					commands = append(commands, fmt.Sprintf("echo \"%s\"", line))
-				}
-			}
-		}
-
-		// For Windows, create a batch script to handle multiple commands
-		if runtime.GOOS == "windows" {
-			fullCommand := strings.Join(commands, " & ")
-			return fullCommand
-		} else {
-			// Join commands with &&
-			fullCommand := strings.Join(commands, " && ")
-			return fullCommand
-		}
+		return "echo" // Placeholder, not actually used
 	}
 
 	// Add main command
@@ -425,12 +461,13 @@ func (r *Runner) writeToOutput(content string) {
 	r.outputMutex.Lock()
 	defer r.outputMutex.Unlock()
 
-	if r.outputFile != nil {
-		if content != "" {
-			if _, err := r.outputFile.WriteString(content + "\n"); err != nil {
-				fmt.Printf("Failed to write to output file: %v\n", err)
-			}
-			r.outputFile.Sync() // Ensure data is written to disk
+	if r.outputFile != nil && content != "" {
+		// Write line to output file with newline
+		if _, err := r.outputFile.WriteString(content + "\n"); err != nil {
+			fmt.Printf("Failed to write to output file: %v\n", err)
+		} else {
+			// Ensure data is written to disk immediately
+			r.outputFile.Sync()
 		}
 	}
 }
@@ -487,37 +524,13 @@ func (r *Runner) updateTaskStatus(taskIndex int, status TaskStatus) {
 	}
 }
 
-func (r *Runner) cleanupChunkFiles() {
-	removedCount := 0
-	for _, chunkFile := range r.chunkFiles {
-		if _, err := os.Stat(chunkFile); err == nil {
-			if err := os.Remove(chunkFile); err != nil {
-				fmt.Printf("Warning: Failed to remove chunk file %s: %v\n", chunkFile, err)
-			} else {
-				removedCount++
-			}
-		}
-	}
-	if removedCount > 0 {
-		fmt.Printf("Cleaned up %d chunk files\n", removedCount)
-	}
-}
-
 func (r *Runner) handleInterrupt() error {
 	fmt.Println("Handling interrupt, stopping all tasks...")
-
-	if runtime.GOOS != "windows" {
-		// Kill tmux session on Unix systems
-		exec.Command("tmux", "kill-session", "-t", r.sessionName).Run()
-	}
 
 	// Close output file
 	if r.outputFile != nil {
 		r.outputFile.Close()
 	}
-
-	// Clean up chunk files even during interrupt
-	r.cleanupChunkFiles()
 
 	fmt.Printf("Partial results saved to: %s\n", r.outputPath)
 	return nil
