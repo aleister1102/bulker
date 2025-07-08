@@ -19,7 +19,6 @@ type RunnerConfig struct {
 	Workers     int
 	Command     string
 	CommandArgs []string
-	CleanupMode bool
 }
 
 type Runner struct {
@@ -116,11 +115,6 @@ func sessionExists(sessionName string) bool {
 func (r *Runner) Run() error {
 	// Setup signal handling
 	r.signalHandler.Setup(r.handleInterrupt)
-
-	if r.config.CleanupMode {
-		fmt.Println("Running in cleanup mode...")
-		return r.cleanup()
-	}
 
 	// Create output directory
 	if err := os.MkdirAll(r.config.OutputDir, 0755); err != nil {
@@ -432,16 +426,5 @@ func (r *Runner) handleInterrupt() error {
 	}
 
 	fmt.Printf("Partial results saved to: %s\n", r.outputPath)
-	return nil
-}
-
-func (r *Runner) cleanup() error {
-	// In cleanup mode, just report the existing output file
-	if _, err := os.Stat(r.outputPath); err == nil {
-		fmt.Printf("Output file found: %s\n", r.outputPath)
-		return nil
-	}
-
-	fmt.Println("No output file found for cleanup")
 	return nil
 }

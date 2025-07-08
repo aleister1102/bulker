@@ -22,10 +22,9 @@ var runCmd = &cobra.Command{
 }
 
 var (
-	inputFile   string
-	outputDir   string
-	workers     int
-	cleanupMode bool
+	inputFile string
+	outputDir string
+	workers   int
 )
 
 func init() {
@@ -34,7 +33,6 @@ func init() {
 	runCmd.Flags().StringVarP(&inputFile, "input", "i", "", "Input file path (required)")
 	runCmd.Flags().StringVarP(&outputDir, "output", "o", "output", "Output directory")
 	runCmd.Flags().IntVarP(&workers, "workers", "w", 4, "Number of parallel workers")
-	runCmd.Flags().BoolVar(&cleanupMode, "cleanup", false, "Cleanup mode - check existing output from interrupted run")
 
 	runCmd.MarkFlagRequired("input")
 }
@@ -56,7 +54,6 @@ func runCommand(cmd *cobra.Command, args []string) {
 		Workers:     workers,
 		Command:     command,
 		CommandArgs: commandArgs,
-		CleanupMode: cleanupMode,
 	})
 
 	if err := runner.Run(); err != nil {

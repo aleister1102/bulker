@@ -7,10 +7,9 @@ Tool for running command line tools in parallel through tmux detach with input f
 - Split input file into chunks for parallel processing (auto-calculated based on workers)
 - Run commands through tmux detach (background)
 - Support multi-threading with worker limits
-- Interrupt handling to collect partial results
+- Interrupt handling with automatic cleanup and partial results saving
 - Thread-safe output writing to single file
 - Auto-generated tmux session names based on command
-- Cleanup mode to check existing output from interrupted runs
 
 ## Installation
 
@@ -32,7 +31,6 @@ go build -o bulker
 - `--input, -i`: Input file path (required)
 - `--output, -o`: Output directory (default: "output")
 - `--workers, -w`: Number of parallel workers (default: 4)
-- `--cleanup`: Cleanup mode - check existing output from interrupted run
 
 ### Placeholders in Command
 
@@ -53,12 +51,6 @@ go build -o bulker
 ./bulker run python --input big_data.txt --workers 4 -- process.py {input}
 ```
 
-#### Cleanup after interrupt
-
-```bash
-./bulker run --cleanup --output output_dir
-```
-
 ## Workflow
 
 1. Tool counts total lines in input file
@@ -68,7 +60,7 @@ go build -o bulker
 5. Runs command on each chunk in separate tmux windows/processes
 6. Monitors progress and reports status
 7. All workers write output to single shared file with thread safety
-8. If interrupted (Ctrl+C), cleanup and keep partial results
+8. If interrupted (Ctrl+C), automatically stops all tasks and saves partial results
 
 ## Output Structure
 
@@ -117,7 +109,7 @@ tmux list-windows -t [session_name]
 - If tmux is not available, tool will report error (Unix) or use background processes (Windows)
 - If input file does not exist, tool will report error
 - If command fails on a chunk, tool will report warning and continue
-- When receiving interrupt signal, tool will cleanup and save partial results to output file
+- When receiving interrupt signal (Ctrl+C), tool automatically stops all tasks and saves partial results to output file
 
 ## Platform Support
 
