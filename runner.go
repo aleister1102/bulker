@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -25,16 +26,17 @@ type RunnerConfig struct {
 type Runner struct {
 	config        RunnerConfig
 	splitter      *FileSplitter
-	collector     *ResultCollector
 	signalHandler *SignalHandler
 	tasks         []Task
 	mu            sync.RWMutex
+	outputFile    *os.File
+	outputMutex   sync.Mutex
+	outputPath    string
 }
 
 type Task struct {
 	ID         int
 	ChunkFile  string
-	ResultFile string
 	WindowName string
 	Status     TaskStatus
 	StartTime  time.Time
@@ -54,8 +56,8 @@ func NewRunner(config RunnerConfig) *Runner {
 	return &Runner{
 		config:        config,
 		splitter:      NewFileSplitter(config.InputFile, config.OutputDir, config.ChunkSize),
-		collector:     NewResultCollector(config.OutputDir),
 		signalHandler: NewSignalHandler(),
+		outputPath:    filepath.Join(config.OutputDir, "output.txt"),
 	}
 }
 
@@ -67,6 +69,19 @@ func (r *Runner) Run() error {
 		fmt.Println("Running in cleanup mode...")
 		return r.cleanup()
 	}
+
+	// Create output directory
+	if err := os.MkdirAll(r.config.OutputDir, 0755); err != nil {
+		return fmt.Errorf("failed to create output directory: %w", err)
+	}
+
+	// Create output file
+	var err error
+	r.outputFile, err = os.Create(r.outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+	defer r.outputFile.Close()
 
 	// Split input file into chunks
 	chunkFiles, err := r.splitter.Split()
@@ -92,12 +107,7 @@ func (r *Runner) Run() error {
 		return fmt.Errorf("monitoring failed: %w", err)
 	}
 
-	// Merge results
-	if err := r.collector.MergeResults(); err != nil {
-		return fmt.Errorf("failed to merge results: %w", err)
-	}
-
-	fmt.Println("All tasks completed successfully!")
+	fmt.Printf("All tasks completed successfully! Output written to: %s\n", r.outputPath)
 	return nil
 }
 
@@ -107,11 +117,9 @@ func (r *Runner) createTasks(chunkFiles []string) {
 
 	r.tasks = make([]Task, len(chunkFiles))
 	for i, chunkFile := range chunkFiles {
-		resultFile := strings.Replace(chunkFile, "chunk_", "result_", 1)
 		r.tasks[i] = Task{
 			ID:         i,
 			ChunkFile:  chunkFile,
-			ResultFile: resultFile,
 			WindowName: fmt.Sprintf("worker_%d", i),
 			Status:     TaskPending,
 		}
@@ -163,7 +171,7 @@ func (r *Runner) runTask(taskIndex int) {
 	r.mu.Unlock()
 
 	// Create command
-	fullCommand := r.buildCommand(task.ChunkFile, task.ResultFile)
+	fullCommand := r.buildCommand(task.ChunkFile)
 
 	if runtime.GOOS == "windows" {
 		r.runTaskWindows(taskIndex, fullCommand)
@@ -175,35 +183,18 @@ func (r *Runner) runTask(taskIndex int) {
 func (r *Runner) runTaskWindows(taskIndex int, fullCommand string) {
 	task := &r.tasks[taskIndex]
 
-	// Parse command and arguments
-	cmdParts := strings.Fields(fullCommand)
-	if len(cmdParts) == 0 {
-		fmt.Printf("Empty command for task %d\n", task.ID)
+	// Run command through cmd.exe for Windows compatibility
+	cmd := exec.Command("cmd", "/c", fullCommand)
+	
+	// Create pipes to capture output
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		fmt.Printf("Failed to create stdout pipe for task %d: %v\n", task.ID, err)
 		r.updateTaskStatus(taskIndex, TaskFailed)
 		return
 	}
 
-	// Create cmd
-	var cmd *exec.Cmd
-
-	// Redirect output to capture results
-	if strings.Contains(fullCommand, ">") {
-		// If command has redirect, run through shell
-		cmd = exec.Command("cmd", "/C", fullCommand)
-	} else {
-		// If no redirect, create output file
-		outputFile, err := os.Create(task.ResultFile)
-		if err != nil {
-			fmt.Printf("Failed to create output file for task %d: %v\n", task.ID, err)
-			r.updateTaskStatus(taskIndex, TaskFailed)
-			return
-		}
-		cmd = exec.Command(cmdParts[0], cmdParts[1:]...)
-		cmd.Stdout = outputFile
-		defer outputFile.Close()
-	}
-
-	// Run command
+	// Start command
 	if err := cmd.Start(); err != nil {
 		fmt.Printf("Failed to start command for task %d: %v\n", task.ID, err)
 		r.updateTaskStatus(taskIndex, TaskFailed)
@@ -211,6 +202,16 @@ func (r *Runner) runTaskWindows(taskIndex int, fullCommand string) {
 	}
 
 	fmt.Printf("Started task %d: %s (PID: %d)\n", task.ID, task.WindowName, cmd.Process.Pid)
+
+	// Read output and write to shared file
+	go func() {
+		defer stdout.Close()
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			r.writeToOutput(line)
+		}
+	}()
 
 	// Wait for command to complete
 	go func() {
@@ -235,8 +236,12 @@ func (r *Runner) runTaskUnix(taskIndex int, fullCommand string) {
 		return
 	}
 
+	// Create a pipe to capture output from tmux
+	tmpFile := fmt.Sprintf("/tmp/bulker_output_%d_%d.txt", task.ID, time.Now().UnixNano())
+	commandWithRedirect := fmt.Sprintf("(%s) > %s 2>&1; echo \"TASK_COMPLETED\" >> %s", fullCommand, tmpFile, tmpFile)
+
 	// Run command in tmux window
-	sendCmd := exec.Command("tmux", "send-keys", "-t", fmt.Sprintf("%s:%s", r.config.SessionName, task.WindowName), fullCommand, "Enter")
+	sendCmd := exec.Command("tmux", "send-keys", "-t", fmt.Sprintf("%s:%s", r.config.SessionName, task.WindowName), commandWithRedirect, "Enter")
 	if err := sendCmd.Run(); err != nil {
 		fmt.Printf("Failed to send command to tmux window for task %d: %v\n", task.ID, err)
 		r.updateTaskStatus(taskIndex, TaskFailed)
@@ -244,22 +249,68 @@ func (r *Runner) runTaskUnix(taskIndex int, fullCommand string) {
 	}
 
 	fmt.Printf("Started task %d: %s\n", task.ID, task.WindowName)
+
+	// Monitor the temp file and copy output to shared file
+	go func() {
+		defer func() {
+			if _, err := os.Stat(tmpFile); err == nil {
+				os.Remove(tmpFile) // Clean up temp file
+			}
+		}()
+
+		// Wait for command to complete by checking for completion marker
+		for {
+			time.Sleep(1 * time.Second)
+			if content, err := os.ReadFile(tmpFile); err == nil {
+				if strings.Contains(string(content), "TASK_COMPLETED") {
+					// Remove the completion marker and write content
+					lines := strings.Split(string(content), "\n")
+					var outputLines []string
+					for _, line := range lines {
+						if line != "TASK_COMPLETED" && line != "" {
+							outputLines = append(outputLines, line)
+						}
+					}
+					if len(outputLines) > 0 {
+						r.writeToOutput(strings.Join(outputLines, "\n"))
+					}
+					r.updateTaskStatus(taskIndex, TaskCompleted)
+					break
+				}
+			}
+		}
+	}()
 }
 
-func (r *Runner) buildCommand(chunkFile, resultFile string) string {
+func (r *Runner) buildCommand(chunkFile string) string {
 	var cmdParts []string
 
 	// Add main command
 	cmdParts = append(cmdParts, r.config.Command)
 
-	// Add arguments, replace {input} and {output} placeholders
+	// Add arguments, replace {input} placeholder
 	for _, arg := range r.config.CommandArgs {
 		arg = strings.ReplaceAll(arg, "{input}", chunkFile)
-		arg = strings.ReplaceAll(arg, "{output}", resultFile)
+		// Remove {output} placeholder since we don't use it anymore
+		arg = strings.ReplaceAll(arg, "{output}", "")
 		cmdParts = append(cmdParts, arg)
 	}
 
 	return strings.Join(cmdParts, " ")
+}
+
+func (r *Runner) writeToOutput(content string) {
+	r.outputMutex.Lock()
+	defer r.outputMutex.Unlock()
+
+	if r.outputFile != nil {
+		if content != "" {
+			if _, err := r.outputFile.WriteString(content + "\n"); err != nil {
+				fmt.Printf("Failed to write to output file: %v\n", err)
+			}
+			r.outputFile.Sync() // Ensure data is written to disk
+		}
+	}
 }
 
 func (r *Runner) monitor() error {
@@ -285,25 +336,21 @@ func (r *Runner) checkAllCompleted() bool {
 
 	completedCount := 0
 	failedCount := 0
+	runningCount := 0
 
-	for i := range r.tasks {
-		task := &r.tasks[i]
-
-		// Check if result file exists
-		if task.Status == TaskRunning {
-			if _, err := os.Stat(task.ResultFile); err == nil {
-				r.updateTaskStatus(i, TaskCompleted)
-				completedCount++
-			}
-		} else if task.Status == TaskCompleted {
+	for _, task := range r.tasks {
+		switch task.Status {
+		case TaskCompleted:
 			completedCount++
-		} else if task.Status == TaskFailed {
+		case TaskFailed:
 			failedCount++
+		case TaskRunning:
+			runningCount++
 		}
 	}
 
 	total := len(r.tasks)
-	fmt.Printf("Progress: %d/%d completed, %d failed\n", completedCount, total, failedCount)
+	fmt.Printf("Progress: %d/%d completed, %d running, %d failed\n", completedCount, total, runningCount, failedCount)
 
 	return completedCount+failedCount == total
 }
@@ -319,30 +366,29 @@ func (r *Runner) updateTaskStatus(taskIndex int, status TaskStatus) {
 }
 
 func (r *Runner) handleInterrupt() error {
-	fmt.Println("Handling interrupt, collecting partial results...")
+	fmt.Println("Handling interrupt, stopping all tasks...")
 
 	if runtime.GOOS != "windows" {
 		// Kill tmux session on Unix systems
 		exec.Command("tmux", "kill-session", "-t", r.config.SessionName).Run()
 	}
 
-	// Collect partial results
-	return r.collector.MergeResults()
+	// Close output file
+	if r.outputFile != nil {
+		r.outputFile.Close()
+	}
+
+	fmt.Printf("Partial results saved to: %s\n", r.outputPath)
+	return nil
 }
 
 func (r *Runner) cleanup() error {
-	// Scan output directory for result files
-	pattern := filepath.Join(r.config.OutputDir, "result_*.txt")
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return fmt.Errorf("failed to find result files: %w", err)
-	}
-
-	if len(matches) == 0 {
-		fmt.Println("No result files found for cleanup")
+	// In cleanup mode, just report the existing output file
+	if _, err := os.Stat(r.outputPath); err == nil {
+		fmt.Printf("Output file found: %s\n", r.outputPath)
 		return nil
 	}
 
-	fmt.Printf("Found %d result files to merge\n", len(matches))
-	return r.collector.MergeResults()
+	fmt.Println("No output file found for cleanup")
+	return nil
 }

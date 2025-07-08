@@ -8,8 +8,8 @@ Tool for running command line tools in parallel through tmux detach with input f
 - Run commands through tmux detach (background)
 - Support multi-threading with worker limits
 - Interrupt handling to collect partial results
-- Merge results from chunks
-- Cleanup mode to collect results from interrupted runs
+- Thread-safe output writing to single file
+- Cleanup mode to check existing output from interrupted runs
 
 ## Installation
 
@@ -33,25 +33,25 @@ go build -o bulker
 - `--workers, -w`: Number of parallel workers (default: 4)
 - `--chunk-size, -c`: Chunk size (lines) (default: 1000)
 - `--session, -s`: Tmux session name (default: "bulker")
-- `--cleanup`: Cleanup mode - collect results from interrupted run
+- `--cleanup`: Cleanup mode - check existing output from interrupted run
 
 ### Placeholders in Command
 
 - `{input}`: Replaced with chunk file path
-- `{output}`: Replaced with result file path
+- `{output}`: No longer used (removed for single file output)
 
 ### Examples
 
 #### Run grep in parallel
 
 ```bash
-./bulker run grep --input data.txt --workers 8 --chunk-size 500 -- -i "pattern" {input} > {output}
+./bulker run grep --input data.txt --workers 8 --chunk-size 500 -- -i "pattern" {input}
 ```
 
 #### Run custom processing script
 
 ```bash
-./bulker run python --input big_data.txt --workers 4 -- process.py {input} {output}
+./bulker run python --input big_data.txt --workers 4 -- process.py {input}
 ```
 
 #### Cleanup after interrupt
@@ -66,8 +66,8 @@ go build -o bulker
 2. Creates new tmux session (or uses background processes on Windows)
 3. Runs command on each chunk in separate tmux windows/processes
 4. Monitors progress and reports status
-5. When completed, merges all result files
-6. If interrupted (Ctrl+C), cleanup and merge partial results
+5. All workers write output to single shared file with thread safety
+6. If interrupted (Ctrl+C), cleanup and keep partial results
 
 ## Output Structure
 
@@ -75,10 +75,15 @@ go build -o bulker
 output/
 ├── chunk_0000.txt    # Input chunks
 ├── chunk_0001.txt
-├── result_0000.txt   # Result files
-├── result_0001.txt
-└── merged_result.txt # Final merged result
+└── output.txt        # Single output file with all results
 ```
+
+## Thread Safety
+
+- All workers write to a single shared output file
+- Mutex synchronization prevents race conditions
+- Output order may vary due to parallel processing
+- File writes are immediately synced to disk
 
 ## Tmux Management
 
@@ -100,7 +105,7 @@ tmux list-windows -t bulker
 - If tmux is not available, tool will report error (Unix) or use background processes (Windows)
 - If input file does not exist, tool will report error
 - If command fails on a chunk, tool will report warning and continue
-- When receiving interrupt signal, tool will cleanup and merge available results
+- When receiving interrupt signal, tool will cleanup and save partial results to output file
 
 ## Platform Support
 
