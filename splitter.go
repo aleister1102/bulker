@@ -82,7 +82,8 @@ func (fs *FileSplitter) Split() ([]string, error) {
 		}
 
 		// Write line to current chunk
-		if _, err := currentWriter.WriteString(scanner.Text() + "\n"); err != nil {
+		line := scanner.Text()
+		if _, err := currentWriter.WriteString(line + "\n"); err != nil {
 			return nil, fmt.Errorf("failed to write to chunk file: %w", err)
 		}
 		lineCount++
