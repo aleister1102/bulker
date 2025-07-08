@@ -10,14 +10,14 @@ import (
 type FileSplitter struct {
 	inputFile string
 	outputDir string
-	chunkSize int
+	workers   int
 }
 
-func NewFileSplitter(inputFile, outputDir string, chunkSize int) *FileSplitter {
+func NewFileSplitter(inputFile, outputDir string, workers int) *FileSplitter {
 	return &FileSplitter{
 		inputFile: inputFile,
 		outputDir: outputDir,
-		chunkSize: chunkSize,
+		workers:   workers,
 	}
 }
 
@@ -26,6 +26,25 @@ func (fs *FileSplitter) Split() ([]string, error) {
 	if err := os.MkdirAll(fs.outputDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
+
+	// Count total lines first
+	totalLines, err := fs.countLines()
+	if err != nil {
+		return nil, fmt.Errorf("failed to count lines: %w", err)
+	}
+
+	// Calculate chunk size based on workers
+	chunkSize := totalLines / fs.workers
+	if totalLines%fs.workers != 0 {
+		chunkSize++ // Round up to ensure all lines are included
+	}
+
+	// Ensure minimum chunk size of 1
+	if chunkSize < 1 {
+		chunkSize = 1
+	}
+
+	fmt.Printf("Total lines: %d, Workers: %d, Chunk size: %d\n", totalLines, fs.workers, chunkSize)
 
 	// Open input file
 	file, err := os.Open(fs.inputFile)
@@ -44,7 +63,7 @@ func (fs *FileSplitter) Split() ([]string, error) {
 
 	for scanner.Scan() {
 		// Create new chunk when needed
-		if lineCount%fs.chunkSize == 0 {
+		if lineCount%chunkSize == 0 {
 			if currentChunk != nil {
 				currentWriter.Flush()
 				currentChunk.Close()
@@ -81,6 +100,22 @@ func (fs *FileSplitter) Split() ([]string, error) {
 
 	fmt.Printf("Split %d lines into %d chunks\n", lineCount, len(chunkFiles))
 	return chunkFiles, nil
+}
+
+func (fs *FileSplitter) countLines() (int, error) {
+	file, err := os.Open(fs.inputFile)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	lineCount := 0
+	for scanner.Scan() {
+		lineCount++
+	}
+
+	return lineCount, scanner.Err()
 }
 
 func (fs *FileSplitter) GetChunkPrefix() string {

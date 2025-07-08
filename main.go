@@ -25,8 +25,6 @@ var (
 	inputFile   string
 	outputDir   string
 	workers     int
-	chunkSize   int
-	sessionName string
 	cleanupMode bool
 )
 
@@ -36,9 +34,7 @@ func init() {
 	runCmd.Flags().StringVarP(&inputFile, "input", "i", "", "Input file path (required)")
 	runCmd.Flags().StringVarP(&outputDir, "output", "o", "output", "Output directory")
 	runCmd.Flags().IntVarP(&workers, "workers", "w", 4, "Number of parallel workers")
-	runCmd.Flags().IntVarP(&chunkSize, "chunk-size", "c", 1000, "Chunk size (lines)")
-	runCmd.Flags().StringVarP(&sessionName, "session", "s", "bulker", "Tmux session name")
-	runCmd.Flags().BoolVar(&cleanupMode, "cleanup", false, "Cleanup mode - collect results from interrupted run")
+	runCmd.Flags().BoolVar(&cleanupMode, "cleanup", false, "Cleanup mode - check existing output from interrupted run")
 
 	runCmd.MarkFlagRequired("input")
 }
@@ -58,8 +54,6 @@ func runCommand(cmd *cobra.Command, args []string) {
 		InputFile:   inputFile,
 		OutputDir:   outputDir,
 		Workers:     workers,
-		ChunkSize:   chunkSize,
-		SessionName: sessionName,
 		Command:     command,
 		CommandArgs: commandArgs,
 		CleanupMode: cleanupMode,

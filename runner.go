@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -16,8 +17,6 @@ type RunnerConfig struct {
 	InputFile   string
 	OutputDir   string
 	Workers     int
-	ChunkSize   int
-	SessionName string
 	Command     string
 	CommandArgs []string
 	CleanupMode bool
@@ -32,6 +31,7 @@ type Runner struct {
 	outputFile    *os.File
 	outputMutex   sync.Mutex
 	outputPath    string
+	sessionName   string
 }
 
 type Task struct {
@@ -55,10 +55,62 @@ const (
 func NewRunner(config RunnerConfig) *Runner {
 	return &Runner{
 		config:        config,
-		splitter:      NewFileSplitter(config.InputFile, config.OutputDir, config.ChunkSize),
+		splitter:      NewFileSplitter(config.InputFile, config.OutputDir, config.Workers),
 		signalHandler: NewSignalHandler(),
 		outputPath:    filepath.Join(config.OutputDir, "output.txt"),
+		sessionName:   createSessionName(config.Command),
 	}
+}
+
+func createSessionName(command string) string {
+	// Normalize command name
+	normalized := normalizeSessionName(command)
+
+	// Check if session already exists and add number suffix if needed
+	sessionName := normalized
+	counter := 1
+
+	for sessionExists(sessionName) {
+		sessionName = fmt.Sprintf("%s_%d", normalized, counter)
+		counter++
+	}
+
+	return sessionName
+}
+
+func normalizeSessionName(command string) string {
+	// Remove path and extension
+	base := filepath.Base(command)
+	if ext := filepath.Ext(base); ext != "" {
+		base = strings.TrimSuffix(base, ext)
+	}
+
+	// Replace invalid characters with underscores
+	reg := regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+	normalized := reg.ReplaceAllString(base, "_")
+
+	// Remove consecutive underscores
+	reg2 := regexp.MustCompile(`_+`)
+	normalized = reg2.ReplaceAllString(normalized, "_")
+
+	// Trim underscores from start and end
+	normalized = strings.Trim(normalized, "_")
+
+	// Ensure it's not empty
+	if normalized == "" {
+		normalized = "bulker"
+	}
+
+	return normalized
+}
+
+func sessionExists(sessionName string) bool {
+	if runtime.GOOS == "windows" {
+		return false // Windows doesn't use tmux
+	}
+
+	cmd := exec.Command("tmux", "has-session", "-t", sessionName)
+	return cmd.Run() == nil
 }
 
 func (r *Runner) Run() error {
@@ -133,14 +185,15 @@ func (r *Runner) createTmuxSession() error {
 	}
 
 	// Kill existing session if exists
-	exec.Command("tmux", "kill-session", "-t", r.config.SessionName).Run()
+	exec.Command("tmux", "kill-session", "-t", r.sessionName).Run()
 
 	// Create new session
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", r.config.SessionName)
+	cmd := exec.Command("tmux", "new-session", "-d", "-s", r.sessionName)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to create tmux session: %w", err)
 	}
 
+	fmt.Printf("Created tmux session: %s\n", r.sessionName)
 	return nil
 }
 
@@ -185,7 +238,7 @@ func (r *Runner) runTaskWindows(taskIndex int, fullCommand string) {
 
 	// Run command through cmd.exe for Windows compatibility
 	cmd := exec.Command("cmd", "/c", fullCommand)
-	
+
 	// Create pipes to capture output
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -229,7 +282,7 @@ func (r *Runner) runTaskUnix(taskIndex int, fullCommand string) {
 	task := &r.tasks[taskIndex]
 
 	// Create tmux window
-	windowCmd := exec.Command("tmux", "new-window", "-t", r.config.SessionName, "-n", task.WindowName)
+	windowCmd := exec.Command("tmux", "new-window", "-t", r.sessionName, "-n", task.WindowName)
 	if err := windowCmd.Run(); err != nil {
 		fmt.Printf("Failed to create tmux window for task %d: %v\n", task.ID, err)
 		r.updateTaskStatus(taskIndex, TaskFailed)
@@ -241,7 +294,7 @@ func (r *Runner) runTaskUnix(taskIndex int, fullCommand string) {
 	commandWithRedirect := fmt.Sprintf("(%s) > %s 2>&1; echo \"TASK_COMPLETED\" >> %s", fullCommand, tmpFile, tmpFile)
 
 	// Run command in tmux window
-	sendCmd := exec.Command("tmux", "send-keys", "-t", fmt.Sprintf("%s:%s", r.config.SessionName, task.WindowName), commandWithRedirect, "Enter")
+	sendCmd := exec.Command("tmux", "send-keys", "-t", fmt.Sprintf("%s:%s", r.sessionName, task.WindowName), commandWithRedirect, "Enter")
 	if err := sendCmd.Run(); err != nil {
 		fmt.Printf("Failed to send command to tmux window for task %d: %v\n", task.ID, err)
 		r.updateTaskStatus(taskIndex, TaskFailed)
@@ -370,7 +423,7 @@ func (r *Runner) handleInterrupt() error {
 
 	if runtime.GOOS != "windows" {
 		// Kill tmux session on Unix systems
-		exec.Command("tmux", "kill-session", "-t", r.config.SessionName).Run()
+		exec.Command("tmux", "kill-session", "-t", r.sessionName).Run()
 	}
 
 	// Close output file

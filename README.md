@@ -4,11 +4,12 @@ Tool for running command line tools in parallel through tmux detach with input f
 
 ## Features
 
-- Split input file into chunks for parallel processing
+- Split input file into chunks for parallel processing (auto-calculated based on workers)
 - Run commands through tmux detach (background)
 - Support multi-threading with worker limits
 - Interrupt handling to collect partial results
 - Thread-safe output writing to single file
+- Auto-generated tmux session names based on command
 - Cleanup mode to check existing output from interrupted runs
 
 ## Installation
@@ -31,8 +32,6 @@ go build -o bulker
 - `--input, -i`: Input file path (required)
 - `--output, -o`: Output directory (default: "output")
 - `--workers, -w`: Number of parallel workers (default: 4)
-- `--chunk-size, -c`: Chunk size (lines) (default: 1000)
-- `--session, -s`: Tmux session name (default: "bulker")
 - `--cleanup`: Cleanup mode - check existing output from interrupted run
 
 ### Placeholders in Command
@@ -45,7 +44,7 @@ go build -o bulker
 #### Run grep in parallel
 
 ```bash
-./bulker run grep --input data.txt --workers 8 --chunk-size 500 -- -i "pattern" {input}
+./bulker run grep --input data.txt --workers 8 -- -i "pattern" {input}
 ```
 
 #### Run custom processing script
@@ -62,12 +61,14 @@ go build -o bulker
 
 ## Workflow
 
-1. Tool splits input file into chunks
-2. Creates new tmux session (or uses background processes on Windows)
-3. Runs command on each chunk in separate tmux windows/processes
-4. Monitors progress and reports status
-5. All workers write output to single shared file with thread safety
-6. If interrupted (Ctrl+C), cleanup and keep partial results
+1. Tool counts total lines in input file
+2. Calculates chunk size automatically (total_lines / workers)
+3. Splits input file into chunks
+4. Creates tmux session with auto-generated name based on command
+5. Runs command on each chunk in separate tmux windows/processes
+6. Monitors progress and reports status
+7. All workers write output to single shared file with thread safety
+8. If interrupted (Ctrl+C), cleanup and keep partial results
 
 ## Output Structure
 
@@ -78,6 +79,17 @@ output/
 └── output.txt        # Single output file with all results
 ```
 
+## Auto Session Naming
+
+- Session names are automatically generated from command name
+- Invalid characters are replaced with underscores
+- If session already exists, a number suffix is added (e.g., `grep_1`, `grep_2`)
+- Examples:
+  - `grep` → `grep`
+  - `python script.py` → `python`
+  - `./my-tool` → `my-tool`
+  - `/usr/bin/find` → `find`
+
 ## Thread Safety
 
 - All workers write to a single shared output file
@@ -87,17 +99,17 @@ output/
 
 ## Tmux Management
 
-Tool creates a tmux session with specified name (default: "bulker") and creates separate windows for each worker. You can:
+Tool creates a tmux session with auto-generated name and creates separate windows for each worker. You can:
 
 ```bash
 # View sessions
 tmux list-sessions
 
-# Attach to session for monitoring
-tmux attach-session -t bulker
+# Attach to session for monitoring (session name will be shown in output)
+tmux attach-session -t [session_name]
 
 # View windows
-tmux list-windows -t bulker
+tmux list-windows -t [session_name]
 ```
 
 ## Error Handling
