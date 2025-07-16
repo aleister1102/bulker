@@ -16,7 +16,7 @@ import (
 
 type RunnerConfig struct {
 	InputFile   string
-	OutputDir   string
+	OutputFile  string
 	Workers     int
 	Command     string
 	CommandArgs []string
@@ -25,6 +25,7 @@ type RunnerConfig struct {
 type Runner struct {
 	config        RunnerConfig
 	signalHandler *SignalHandler
+	strategy      ToolStrategy
 	tasks         []Task
 	mu            sync.RWMutex
 	outputFile    *os.File
@@ -32,11 +33,16 @@ type Runner struct {
 	outputPath    string
 	sessionName   string
 	inputLines    []string // Store input lines directly
+	// Performance tracking
+	startTime       time.Time
+	endTime         time.Time
+	initialMemStats runtime.MemStats
+	finalMemStats   runtime.MemStats
 }
 
 type Task struct {
 	ID         int
-	ChunkFile  string
+	InputData  string
 	WindowName string
 	Status     TaskStatus
 	StartTime  time.Time
@@ -56,7 +62,8 @@ func NewRunner(config RunnerConfig) *Runner {
 	return &Runner{
 		config:        config,
 		signalHandler: NewSignalHandler(),
-		outputPath:    filepath.Join(config.OutputDir, "output.txt"),
+		strategy:      GetToolStrategy(config.Command),
+		outputPath:    config.OutputFile,
 		sessionName:   createSessionName(config.Command),
 	}
 }
@@ -124,7 +131,7 @@ func (r *Runner) readInputFile() error {
 		return fmt.Errorf("error reading input file: %w", err)
 	}
 
-	fmt.Printf("Read %d lines from input file: %v\n", len(r.inputLines), r.inputLines)
+	LogInfo("Read %d lines from input file", len(r.inputLines))
 	return nil
 }
 
@@ -158,12 +165,24 @@ func sessionExists(sessionName string) bool {
 }
 
 func (r *Runner) Run() error {
+	// Start performance tracking
+	r.startTime = time.Now()
+	runtime.ReadMemStats(&r.initialMemStats)
+
 	// Setup signal handling
 	r.signalHandler.Setup(r.handleInterrupt)
 
-	// Create output directory
-	if err := os.MkdirAll(r.config.OutputDir, 0755); err != nil {
-		return fmt.Errorf("failed to create output directory: %w", err)
+	// Backup existing output file if it exists
+	if err := r.backupOutputFile(); err != nil {
+		return fmt.Errorf("failed to backup output file: %w", err)
+	}
+
+	// Create output directory if needed
+	outputDir := filepath.Dir(r.config.OutputFile)
+	if outputDir != "." && outputDir != "" {
+		if err := os.MkdirAll(outputDir, 0755); err != nil {
+			return fmt.Errorf("failed to create output directory: %w", err)
+		}
 	}
 
 	// Create output file
@@ -183,9 +202,9 @@ func (r *Runner) Run() error {
 	// Create tasks based on line ranges
 	r.createTasks()
 
-	// Create tmux session
-	if err := r.createTmuxSession(); err != nil {
-		return fmt.Errorf("failed to create tmux session: %w", err)
+	// Setup tool strategy
+	if err := r.setupToolStrategy(); err != nil {
+		return fmt.Errorf("failed to setup tool strategy: %w", err)
 	}
 
 	// Run tasks
@@ -198,11 +217,39 @@ func (r *Runner) Run() error {
 		return fmt.Errorf("monitoring failed: %w", err)
 	}
 
-	// No chunk files to clean up anymore
-	fmt.Println("Processing completed, no cleanup needed")
+	// End performance tracking
+	r.endTime = time.Now()
+	runtime.ReadMemStats(&r.finalMemStats)
 
-	fmt.Printf("All tasks completed successfully! Output written to: %s\n", r.outputPath)
+	// Processing completed
+	LogInfo("Processing completed")
+
+	LogSuccess("All tasks completed successfully! Output written to: %s", r.outputPath)
+
+	// Display performance metrics
+	r.displayPerformanceMetrics()
+
 	return nil
+}
+
+func (r *Runner) backupOutputFile() error {
+	if _, err := os.Stat(r.outputPath); os.IsNotExist(err) {
+		// File doesn't exist, no need to backup
+		return nil
+	} else if err != nil {
+		// Other error
+		return err
+	}
+
+	// File exists, create backup name
+	timestamp := time.Now().Format("20060102_150405")
+	ext := filepath.Ext(r.outputPath)
+	base := strings.TrimSuffix(r.outputPath, ext)
+	backupPath := fmt.Sprintf("%s_%s%s", base, timestamp, ext)
+
+	LogInfo("Output file %s exists. Backing up to %s", r.outputPath, backupPath)
+
+	return os.Rename(r.outputPath, backupPath)
 }
 
 func (r *Runner) createTasks() {
@@ -211,7 +258,7 @@ func (r *Runner) createTasks() {
 
 	totalLines := len(r.inputLines)
 	if totalLines == 0 {
-		fmt.Println("No lines to process")
+		LogWarn("No lines to process")
 		return
 	}
 
@@ -226,7 +273,7 @@ func (r *Runner) createTasks() {
 		chunkSize = 1
 	}
 
-	fmt.Printf("Total lines: %d, Workers: %d, Chunk size: %d\n", totalLines, r.config.Workers, chunkSize)
+	LogInfo("Total lines: %d, Workers: %d, Chunk size: %d", totalLines, r.config.Workers, chunkSize)
 
 	// Create tasks based on line ranges
 	r.tasks = make([]Task, 0, r.config.Workers)
@@ -238,10 +285,10 @@ func (r *Runner) createTasks() {
 			endLine = totalLines
 		}
 
-		fmt.Printf("Creating task %d: lines %d-%d (%d lines)\n", taskID, startLine, endLine-1, endLine-startLine)
+		LogInfo("Creating task %d: lines %d-%d (%d lines)", taskID, startLine, endLine-1, endLine-startLine)
 		r.tasks = append(r.tasks, Task{
 			ID:         taskID,
-			ChunkFile:  fmt.Sprintf("lines_%d_%d", startLine, endLine-1), // Store line range info
+			InputData:  fmt.Sprintf("lines_%d_%d", startLine, endLine-1), // Store line range info
 			WindowName: fmt.Sprintf("worker_%d", taskID),
 			Status:     TaskPending,
 		})
@@ -249,9 +296,9 @@ func (r *Runner) createTasks() {
 	}
 }
 
-func (r *Runner) createTmuxSession() error {
-	// No longer creating tmux sessions - all tasks run directly and output to shared file
-	fmt.Println("Running tasks directly with shared output file")
+func (r *Runner) setupToolStrategy() error {
+	// Setup tool strategy for processing
+	LogInfo("Setup tool strategy for %s", r.config.Command)
 	return nil
 }
 
@@ -281,180 +328,76 @@ func (r *Runner) runTask(taskIndex int) {
 	task.StartTime = time.Now()
 	r.mu.Unlock()
 
-	// Create command
-	fullCommand := r.buildCommand(task.ChunkFile)
-
-	if runtime.GOOS == "windows" {
-		r.runTaskWindows(taskIndex, fullCommand)
-	} else {
-		r.runTaskUnix(taskIndex, fullCommand)
+	var tempOutputFile string
+	cleanupFunc := func() {
+		if tempOutputFile != "" {
+			// Read content from temp file, write to main output, then delete temp file
+			content, err := os.ReadFile(tempOutputFile)
+			if err != nil && !os.IsNotExist(err) {
+				LogError("Failed to read temp output file %s: %v", tempOutputFile, err)
+			} else if err == nil {
+				// Trim null bytes or other non-printable chars from the content
+				trimmedContent := strings.Trim(string(content), "\\x00")
+				r.writeToOutput(trimmedContent)
+			}
+			os.Remove(tempOutputFile)
+		}
+		// Cleanup input chunk file
+		if r.strategy.NeedsFileChunk() {
+			startLine, endLine, err := r.parseLineRange(task.InputData)
+			if err == nil {
+				inputData, err := r.strategy.PrepareInput(r.inputLines, taskIndex, startLine, endLine)
+				if err == nil {
+					r.strategy.Cleanup(inputData)
+				}
+			}
+		}
 	}
-}
+	defer cleanupFunc()
 
-func (r *Runner) runTaskWindows(taskIndex int, fullCommand string) {
-	task := &r.tasks[taskIndex]
-
-	// For Windows, handle echo command specially by processing lines directly from memory
-	if r.config.Command == "echo" {
-		// Parse line range from task.ChunkFile (format: "lines_start_end")
-		startLine, endLine, err := r.parseLineRange(task.ChunkFile)
+	// Use strategy pattern
+	if fileOutputStrategy, ok := r.strategy.(FileOutputStrategy); ok && fileOutputStrategy.HandlesFileOutput(r.config.CommandArgs) {
+		startLine, endLine, err := r.parseLineRange(task.InputData)
 		if err != nil {
-			fmt.Printf("Failed to parse line range %s: %v\n", task.ChunkFile, err)
+			LogError("Failed to parse line range %s: %v", task.InputData, err)
 			r.updateTaskStatus(taskIndex, TaskFailed)
 			return
 		}
 
-		fmt.Printf("Started task %d: %s (processing lines %d-%d)\n", task.ID, task.WindowName, startLine, endLine)
-
-		// Process each line from memory and write directly to shared output file
-		for i := startLine; i <= endLine && i < len(r.inputLines); i++ {
-			r.writeToOutput(r.inputLines[i])
-		}
-
-		fmt.Printf("Task %d completed successfully\n", task.ID)
-		r.updateTaskStatus(taskIndex, TaskCompleted)
-		return
-	}
-
-	// For other commands, run through cmd.exe and capture output
-	cmd := exec.Command("cmd", "/c", fullCommand)
-
-	// Create pipes to capture output
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		fmt.Printf("Failed to create stdout pipe for task %d: %v\n", task.ID, err)
-		r.updateTaskStatus(taskIndex, TaskFailed)
-		return
-	}
-
-	// Start command
-	if err := cmd.Start(); err != nil {
-		fmt.Printf("Failed to start command for task %d: %v\n", task.ID, err)
-		r.updateTaskStatus(taskIndex, TaskFailed)
-		return
-	}
-
-	fmt.Printf("Started task %d: %s (PID: %d)\n", task.ID, task.WindowName, cmd.Process.Pid)
-
-	// Read output line by line and write directly to shared output file
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		defer stdout.Close()
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Text()
-			// Write each line immediately to the shared output file
-			r.writeToOutput(line)
-		}
-	}()
-
-	// Wait for command to complete
-	if err := cmd.Wait(); err != nil {
-		fmt.Printf("Task %d failed: %v\n", task.ID, err)
-		r.updateTaskStatus(taskIndex, TaskFailed)
-	} else {
-		// Wait for output goroutine to finish before marking as completed
-		wg.Wait()
-		fmt.Printf("Task %d completed successfully\n", task.ID)
-		r.updateTaskStatus(taskIndex, TaskCompleted)
-	}
-}
-
-func (r *Runner) runTaskUnix(taskIndex int, fullCommand string) {
-	task := &r.tasks[taskIndex]
-
-	// For Unix, handle echo command specially by processing lines directly from memory
-	if r.config.Command == "echo" {
-		// Parse line range from task.ChunkFile (format: "lines_start_end")
-		startLine, endLine, err := r.parseLineRange(task.ChunkFile)
+		inputData, err := fileOutputStrategy.PrepareInput(r.inputLines, taskIndex, startLine, endLine)
 		if err != nil {
-			fmt.Printf("Failed to parse line range %s: %v\n", task.ChunkFile, err)
+			LogError("Failed to prepare input for task %d: %v", task.ID, err)
 			r.updateTaskStatus(taskIndex, TaskFailed)
 			return
 		}
 
-		fmt.Printf("Started task %d: %s (processing lines %d-%d)\n", task.ID, task.WindowName, startLine, endLine)
+		var cmdParts []string
+		cmdParts, tempOutputFile = fileOutputStrategy.BuildCommandWithFileOutput(inputData, r.config.CommandArgs, task.ID)
+		r.runTaskWithCommand(taskIndex, cmdParts, true)
 
-		// Process each line from memory and write directly to shared output file
-		for i := startLine; i <= endLine && i < len(r.inputLines); i++ {
-			r.writeToOutput(r.inputLines[i])
+	} else if r.strategy.NeedsFileChunk() {
+		// Tạo file chunk cho tools như httpx
+		startLine, endLine, err := r.parseLineRange(task.InputData)
+		if err != nil {
+			LogError("Failed to parse line range %s: %v", task.InputData, err)
+			r.updateTaskStatus(taskIndex, TaskFailed)
+			return
 		}
 
-		fmt.Printf("Task %d completed successfully\n", task.ID)
-		r.updateTaskStatus(taskIndex, TaskCompleted)
-		return
-	}
-
-	// For other commands, run the command directly and capture output
-	cmd := exec.Command("bash", "-c", fullCommand)
-
-	// Create pipes to capture output
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		fmt.Printf("Failed to create stdout pipe for task %d: %v\n", task.ID, err)
-		r.updateTaskStatus(taskIndex, TaskFailed)
-		return
-	}
-
-	// Start command
-	if err := cmd.Start(); err != nil {
-		fmt.Printf("Failed to start command for task %d: %v\n", task.ID, err)
-		r.updateTaskStatus(taskIndex, TaskFailed)
-		return
-	}
-
-	fmt.Printf("Started task %d: %s (PID: %d)\n", task.ID, task.WindowName, cmd.Process.Pid)
-
-	// Read output line by line and write directly to shared output file
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		defer stdout.Close()
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Text()
-			// Write each line immediately to the shared output file
-			r.writeToOutput(line)
+		inputData, err := r.strategy.PrepareInput(r.inputLines, taskIndex, startLine, endLine)
+		if err != nil {
+			LogError("Failed to prepare input for task %d: %v", task.ID, err)
+			r.updateTaskStatus(taskIndex, TaskFailed)
+			return
 		}
-	}()
 
-	// Wait for command to complete
-	if err := cmd.Wait(); err != nil {
-		fmt.Printf("Task %d failed: %v\n", task.ID, err)
-		r.updateTaskStatus(taskIndex, TaskFailed)
+		// Build command using strategy
+		cmdParts := r.strategy.BuildCommand(inputData, r.config.CommandArgs)
+		r.runTaskWithCommand(taskIndex, cmdParts, false)
 	} else {
-		// Wait for output goroutine to finish before marking as completed
-		wg.Wait()
-		fmt.Printf("Task %d completed successfully\n", task.ID)
-		r.updateTaskStatus(taskIndex, TaskCompleted)
+		// Xử lý trực tiếp cho echo
+		r.runTaskDirect(taskIndex)
 	}
-}
-
-func (r *Runner) buildCommand(chunkFile string) string {
-	var cmdParts []string
-
-	// For echo command, we handle it directly in runTaskWindows/runTaskUnix
-	// so we don't need to build actual commands for it
-	if r.config.Command == "echo" {
-		return "echo" // Placeholder, not actually used
-	}
-
-	// Add main command
-	cmdParts = append(cmdParts, r.config.Command)
-
-	// Add arguments, replace {input} placeholder
-	for _, arg := range r.config.CommandArgs {
-		arg = strings.ReplaceAll(arg, "{input}", chunkFile)
-		// Remove {output} placeholder since we don't use it anymore
-		arg = strings.ReplaceAll(arg, "{output}", "")
-		cmdParts = append(cmdParts, arg)
-	}
-
-	command := strings.Join(cmdParts, " ")
-	return command
 }
 
 func (r *Runner) writeToOutput(content string) {
@@ -464,7 +407,7 @@ func (r *Runner) writeToOutput(content string) {
 	if r.outputFile != nil && content != "" {
 		// Write line to output file with newline
 		if _, err := r.outputFile.WriteString(content + "\n"); err != nil {
-			fmt.Printf("Failed to write to output file: %v\n", err)
+			LogError("Failed to write to output file: %v", err)
 		} else {
 			// Ensure data is written to disk immediately
 			r.outputFile.Sync()
@@ -483,7 +426,7 @@ func (r *Runner) monitor() error {
 				return nil
 			}
 		case <-r.signalHandler.InterruptChan():
-			fmt.Println("\nReceived interrupt signal, cleaning up...")
+			LogWarn("Received interrupt signal, cleaning up...")
 			return r.handleInterrupt()
 		}
 	}
@@ -509,7 +452,7 @@ func (r *Runner) checkAllCompleted() bool {
 	}
 
 	total := len(r.tasks)
-	fmt.Printf("Progress: %d/%d completed, %d running, %d failed\n", completedCount, total, runningCount, failedCount)
+	LogInfo("Progress: %d/%d completed, %d running, %d failed", completedCount, total, runningCount, failedCount)
 
 	return completedCount+failedCount == total
 }
@@ -525,13 +468,179 @@ func (r *Runner) updateTaskStatus(taskIndex int, status TaskStatus) {
 }
 
 func (r *Runner) handleInterrupt() error {
-	fmt.Println("Handling interrupt, stopping all tasks...")
+	LogInfo("Handling interrupt, stopping all tasks...")
 
 	// Close output file
 	if r.outputFile != nil {
 		r.outputFile.Close()
 	}
 
-	fmt.Printf("Partial results saved to: %s\n", r.outputPath)
+	LogInfo("Partial results saved to: %s", r.outputPath)
 	return nil
+}
+
+func (r *Runner) displayPerformanceMetrics() {
+	duration := r.endTime.Sub(r.startTime)
+
+	// Calculate memory usage
+	memUsed := r.finalMemStats.Alloc - r.initialMemStats.Alloc
+	memUsedMB := float64(memUsed) / 1024 / 1024
+
+	// Peak memory usage
+	peakMemMB := float64(r.finalMemStats.Sys) / 1024 / 1024
+
+	LogPerf("=== Performance Metrics ===")
+	LogPerf("Total execution time: %v", duration)
+	LogPerf("Memory allocated: %.2f MB", memUsedMB)
+	LogPerf("Peak memory usage: %.2f MB", peakMemMB)
+	LogPerf("Total goroutines: %d", runtime.NumGoroutine())
+
+	// Task statistics
+	r.mu.RLock()
+	completedCount := 0
+	failedCount := 0
+	var totalTaskTime time.Duration
+
+	for _, task := range r.tasks {
+		switch task.Status {
+		case TaskCompleted:
+			completedCount++
+			if !task.EndTime.IsZero() && !task.StartTime.IsZero() {
+				totalTaskTime += task.EndTime.Sub(task.StartTime)
+			}
+		case TaskFailed:
+			failedCount++
+		}
+	}
+	r.mu.RUnlock()
+
+	LogPerf("Tasks completed: %d", completedCount)
+	LogPerf("Tasks failed: %d", failedCount)
+	LogPerf("Total task time: %v", totalTaskTime)
+
+	if completedCount > 0 {
+		avgTaskTime := totalTaskTime / time.Duration(completedCount)
+		LogPerf("Average task time: %v", avgTaskTime)
+	}
+
+	LogPerf("===========================")
+}
+
+// runTaskDirect xử lý trực tiếp cho echo command
+func (r *Runner) runTaskDirect(taskIndex int) {
+	r.mu.RLock()
+	task := &r.tasks[taskIndex]
+	r.mu.RUnlock()
+
+	// Parse line range from task.InputData (format: "lines_start_end")
+	startLine, endLine, err := r.parseLineRange(task.InputData)
+	if err != nil {
+		LogError("Failed to parse line range %s: %v", task.InputData, err)
+		r.updateTaskStatus(taskIndex, TaskFailed)
+		return
+	}
+
+	LogTask(task.ID, "Started: %s (processing lines %d-%d)", task.WindowName, startLine, endLine)
+
+	// Process each line from memory and write directly to shared output file
+	for i := startLine; i <= endLine && i < len(r.inputLines); i++ {
+		r.writeToOutput(r.inputLines[i])
+	}
+
+	LogTask(task.ID, "completed successfully")
+	r.updateTaskStatus(taskIndex, TaskCompleted)
+}
+
+// runTaskWithCommand chạy command với external tools
+func (r *Runner) runTaskWithCommand(taskIndex int, cmdParts []string, ignoreStdout bool) {
+	r.mu.RLock()
+	task := &r.tasks[taskIndex]
+	r.mu.RUnlock()
+
+	// Create command
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		fullCommand := strings.Join(cmdParts, " ")
+		LogInfo("Running command: cmd /c %s", fullCommand)
+		cmd = exec.Command("cmd", "/c", fullCommand)
+	} else {
+		fullCommand := strings.Join(cmdParts, " ")
+		LogInfo("Running command: bash -c %s", fullCommand)
+		cmd = exec.Command("bash", "-c", fullCommand)
+	}
+
+	// Create pipes to capture output
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		LogError("Failed to create stdout pipe for task %d: %v", task.ID, err)
+		r.updateTaskStatus(taskIndex, TaskFailed)
+		return
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		LogError("Failed to create stderr pipe for task %d: %v", task.ID, err)
+		r.updateTaskStatus(taskIndex, TaskFailed)
+		return
+	}
+
+	// Start command
+	if err := cmd.Start(); err != nil {
+		LogError("Failed to start command for task %d: %v", task.ID, err)
+		r.updateTaskStatus(taskIndex, TaskFailed)
+		return
+	}
+
+	LogTask(task.ID, "Started: %s (PID: %d)", task.WindowName, cmd.Process.Pid)
+
+	// Read output line by line and write directly to shared output file
+	var wg sync.WaitGroup
+
+	if !ignoreStdout {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer stdout.Close()
+			scanner := bufio.NewScanner(stdout)
+			for scanner.Scan() {
+				line := scanner.Text()
+				// Write each line immediately to the shared output file
+				r.writeToOutput(line)
+			}
+		}()
+	} else {
+		// Khi tool tự quản lý output, vẫn hiển thị stdout cho user xem progress
+		go func() {
+			defer stdout.Close()
+			scanner := bufio.NewScanner(stdout)
+			for scanner.Scan() {
+				line := scanner.Text()
+				// Hiển thị trực tiếp stdout của tool ra console
+				fmt.Println(line)
+			}
+		}()
+	}
+
+	// Capture stderr và hiển thị realtime
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer stderr.Close()
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			line := scanner.Text()
+			// Hiển thị stderr realtime để user biết có lỗi gì
+			LogTask(task.ID, "[STDERR] %s", line)
+		}
+	}()
+
+	// Wait for command to complete
+	if err := cmd.Wait(); err != nil {
+		LogError("Task %d failed: %v", task.ID, err)
+		r.updateTaskStatus(taskIndex, TaskFailed)
+	} else {
+		// Wait for output goroutine to finish before marking as completed
+		wg.Wait()
+		LogTask(task.ID, "completed successfully")
+		r.updateTaskStatus(taskIndex, TaskCompleted)
+	}
 }

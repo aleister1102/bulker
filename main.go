@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -22,16 +21,16 @@ var runCmd = &cobra.Command{
 }
 
 var (
-	inputFile string
-	outputDir string
-	workers   int
+	inputFile  string
+	outputFile string
+	workers    int
 )
 
 func init() {
 	rootCmd.AddCommand(runCmd)
 
 	runCmd.Flags().StringVarP(&inputFile, "input", "i", "", "Input file path (required)")
-	runCmd.Flags().StringVarP(&outputDir, "output", "o", "output", "Output directory")
+	runCmd.Flags().StringVarP(&outputFile, "output", "o", "output.txt", "Output file path")
 	runCmd.Flags().IntVarP(&workers, "workers", "w", 4, "Number of parallel workers")
 
 	runCmd.MarkFlagRequired("input")
@@ -39,7 +38,7 @@ func init() {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
+		LogError("%v", err)
 		os.Exit(1)
 	}
 }
@@ -50,14 +49,14 @@ func runCommand(cmd *cobra.Command, args []string) {
 
 	runner := NewRunner(RunnerConfig{
 		InputFile:   inputFile,
-		OutputDir:   outputDir,
+		OutputFile:  outputFile,
 		Workers:     workers,
 		Command:     command,
 		CommandArgs: commandArgs,
 	})
 
 	if err := runner.Run(); err != nil {
-		fmt.Printf("Error: %v\n", err)
+		LogError("Error: %v", err)
 		os.Exit(1)
 	}
 }
