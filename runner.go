@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -20,19 +19,22 @@ type RunnerConfig struct {
 	Workers     int
 	Command     string
 	CommandArgs []string
+	ConfigFile  string
+	Wordlist    string
 }
 
 type Runner struct {
 	config        RunnerConfig
 	signalHandler *SignalHandler
-	strategy      ToolStrategy
+	configManager *ConfigManager
+	toolConfig    ToolConfig
 	tasks         []Task
 	mu            sync.RWMutex
 	outputFile    *os.File
 	outputMutex   sync.Mutex
 	outputPath    string
-	sessionName   string
 	inputLines    []string // Store input lines directly
+	cancelChan    chan struct{}
 	// Performance tracking
 	startTime       time.Time
 	endTime         time.Time
@@ -58,56 +60,39 @@ const (
 	TaskFailed
 )
 
-func NewRunner(config RunnerConfig) *Runner {
+func NewRunner(config RunnerConfig) (*Runner, error) {
+	configManager, err := NewConfigManager(config.ConfigFile)
+	if err != nil {
+		LogWarn("Could not load config file: %v. Only 'echo' command will be available.", err)
+	}
+
+	var toolConfig ToolConfig
+	var exists bool
+
+	if configManager != nil {
+		toolConfig, exists = configManager.GetToolConfig(config.Command)
+	}
+
+	if !exists {
+		if config.Command == "echo" {
+			toolConfig = ToolConfig{
+				Description: "Simple text processing and output",
+				Mode:        "single", // or "multiple", echo can work both ways
+				Command:     "echo {input}",
+			}
+		} else {
+			return nil, fmt.Errorf("tool '%s' not found in config file '%s'", config.Command, config.ConfigFile)
+		}
+	}
+
 	return &Runner{
 		config:        config,
 		signalHandler: NewSignalHandler(),
-		strategy:      GetToolStrategy(config.Command),
+		configManager: configManager,
+		toolConfig:    toolConfig,
 		outputPath:    config.OutputFile,
-		sessionName:   createSessionName(config.Command),
-	}
-}
-
-func createSessionName(command string) string {
-	// Normalize command name
-	normalized := normalizeSessionName(command)
-
-	// Check if session already exists and add number suffix if needed
-	sessionName := normalized
-	counter := 1
-
-	for sessionExists(sessionName) {
-		sessionName = fmt.Sprintf("%s_%d", normalized, counter)
-		counter++
-	}
-
-	return sessionName
-}
-
-func normalizeSessionName(command string) string {
-	// Remove path and extension
-	base := filepath.Base(command)
-	if ext := filepath.Ext(base); ext != "" {
-		base = strings.TrimSuffix(base, ext)
-	}
-
-	// Replace invalid characters with underscores
-	reg := regexp.MustCompile(`[^a-zA-Z0-9_-]`)
-	normalized := reg.ReplaceAllString(base, "_")
-
-	// Remove consecutive underscores
-	reg2 := regexp.MustCompile(`_+`)
-	normalized = reg2.ReplaceAllString(normalized, "_")
-
-	// Trim underscores from start and end
-	normalized = strings.Trim(normalized, "_")
-
-	// Ensure it's not empty
-	if normalized == "" {
-		normalized = "bulker"
-	}
-
-	return normalized
+		cancelChan:    make(chan struct{}),
+	}, nil
 }
 
 func (r *Runner) readInputFile() error {
@@ -155,15 +140,6 @@ func (r *Runner) parseLineRange(rangeStr string) (int, int, error) {
 	return startLine, endLine, nil
 }
 
-func sessionExists(sessionName string) bool {
-	if runtime.GOOS == "windows" {
-		return false // Windows doesn't use tmux
-	}
-
-	cmd := exec.Command("tmux", "has-session", "-t", sessionName)
-	return cmd.Run() == nil
-}
-
 func (r *Runner) Run() error {
 	// Start performance tracking
 	r.startTime = time.Now()
@@ -190,6 +166,10 @@ func (r *Runner) Run() error {
 	r.outputFile, err = os.Create(r.outputPath)
 	if err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
+	}
+	// Write header if defined in config
+	if r.toolConfig.Header != "" {
+		r.outputFile.WriteString(r.toolConfig.Header + "\n")
 	}
 	defer r.outputFile.Close()
 
@@ -262,37 +242,48 @@ func (r *Runner) createTasks() {
 		return
 	}
 
-	// Calculate chunk size based on workers
-	chunkSize := totalLines / r.config.Workers
-	if totalLines%r.config.Workers != 0 {
-		chunkSize++ // Round up to ensure all lines are included
-	}
+	r.tasks = make([]Task, 0)
 
-	// Ensure minimum chunk size of 1
-	if chunkSize < 1 {
-		chunkSize = 1
-	}
-
-	LogInfo("Total lines: %d, Workers: %d, Chunk size: %d", totalLines, r.config.Workers, chunkSize)
-
-	// Create tasks based on line ranges
-	r.tasks = make([]Task, 0, r.config.Workers)
-	taskID := 0
-
-	for startLine := 0; startLine < totalLines; startLine += chunkSize {
-		endLine := startLine + chunkSize
-		if endLine > totalLines {
-			endLine = totalLines
+	switch r.toolConfig.Mode {
+	case "multiple":
+		// Chia input thành các chunks, mỗi chunk là một task
+		chunkSize := totalLines / r.config.Workers
+		if totalLines%r.config.Workers != 0 {
+			chunkSize++
 		}
-
-		LogInfo("Creating task %d: lines %d-%d (%d lines)", taskID, startLine, endLine-1, endLine-startLine)
-		r.tasks = append(r.tasks, Task{
-			ID:         taskID,
-			InputData:  fmt.Sprintf("lines_%d_%d", startLine, endLine-1), // Store line range info
-			WindowName: fmt.Sprintf("worker_%d", taskID),
-			Status:     TaskPending,
-		})
-		taskID++
+		if chunkSize < 1 {
+			chunkSize = 1
+		}
+		LogInfo("Total lines: %d, Workers: %d, Chunk size: %d", totalLines, r.config.Workers, chunkSize)
+		taskID := 0
+		for startLine := 0; startLine < totalLines; startLine += chunkSize {
+			endLine := startLine + chunkSize
+			if endLine > totalLines {
+				endLine = totalLines
+			}
+			LogInfo("Creating task %d: lines %d-%d", taskID, startLine, endLine-1)
+			r.tasks = append(r.tasks, Task{
+				ID:         taskID,
+				InputData:  fmt.Sprintf("lines_%d_%d", startLine, endLine-1),
+				WindowName: fmt.Sprintf("worker_%d", taskID),
+				Status:     TaskPending,
+			})
+			taskID++
+		}
+	case "single":
+		// Mỗi dòng là một task
+		LogInfo("Total lines: %d, Mode: single. Creating %d tasks.", totalLines, totalLines)
+		for i, line := range r.inputLines {
+			r.tasks = append(r.tasks, Task{
+				ID:         i,
+				InputData:  line,
+				WindowName: fmt.Sprintf("worker_%d", i),
+				Status:     TaskPending,
+			})
+		}
+	default:
+		// Sẽ không xảy ra nếu config hợp lệ
+		LogError("Invalid tool mode: %s", r.toolConfig.Mode)
 	}
 }
 
@@ -310,10 +301,15 @@ func (r *Runner) runTasks() error {
 		wg.Add(1)
 		go func(taskIndex int) {
 			defer wg.Done()
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
 
-			r.runTask(taskIndex)
+			select {
+			case <-r.cancelChan:
+				LogWarn("Task %d cancelled.", r.tasks[taskIndex].ID)
+				return
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+				r.runTask(taskIndex)
+			}
 		}(i)
 	}
 
@@ -329,75 +325,99 @@ func (r *Runner) runTask(taskIndex int) {
 	r.mu.Unlock()
 
 	var tempOutputFile string
+	var chunkFile string
+	var inputData string
+
 	cleanupFunc := func() {
 		if tempOutputFile != "" {
-			// Read content from temp file, write to main output, then delete temp file
 			content, err := os.ReadFile(tempOutputFile)
-			if err != nil && !os.IsNotExist(err) {
-				LogError("Failed to read temp output file %s: %v", tempOutputFile, err)
-			} else if err == nil {
-				// Trim null bytes or other non-printable chars from the content
-				trimmedContent := strings.Trim(string(content), "\\x00")
+			if err == nil {
+				// Trim header if it exists
+				lines := strings.Split(string(content), "\n")
+				var contentToWrite string
+				if len(lines) > 0 && r.toolConfig.Header != "" && strings.TrimSpace(lines[0]) == r.toolConfig.Header {
+					contentToWrite = strings.Join(lines[1:], "\n")
+				} else {
+					contentToWrite = string(content)
+				}
+
+				trimmedContent := strings.Trim(contentToWrite, "\\x00")
 				r.writeToOutput(trimmedContent)
+
+			} else if !os.IsNotExist(err) {
+				LogError("Failed to read temp output file %s: %v", tempOutputFile, err)
 			}
 			os.Remove(tempOutputFile)
 		}
-		// Cleanup input chunk file
-		if r.strategy.NeedsFileChunk() {
-			startLine, endLine, err := r.parseLineRange(task.InputData)
-			if err == nil {
-				inputData, err := r.strategy.PrepareInput(r.inputLines, taskIndex, startLine, endLine)
-				if err == nil {
-					r.strategy.Cleanup(inputData)
-				}
-			}
+		if chunkFile != "" {
+			os.Remove(chunkFile)
 		}
 	}
 	defer cleanupFunc()
 
-	// Use strategy pattern
-	if fileOutputStrategy, ok := r.strategy.(FileOutputStrategy); ok && fileOutputStrategy.HandlesFileOutput(r.config.CommandArgs) {
-		startLine, endLine, err := r.parseLineRange(task.InputData)
-		if err != nil {
-			LogError("Failed to parse line range %s: %v", task.InputData, err)
-			r.updateTaskStatus(taskIndex, TaskFailed)
-			return
+	// Handle 'echo' as a special case
+	if r.config.Command == "echo" {
+		if r.toolConfig.Mode == "single" {
+			r.writeToOutput(task.InputData)
+		} else { // "multiple"
+			startLine, endLine, err := r.parseLineRange(task.InputData)
+			if err == nil {
+				for i := startLine; i <= endLine && i < len(r.inputLines); i++ {
+					r.writeToOutput(r.inputLines[i])
+				}
+			}
 		}
-
-		inputData, err := fileOutputStrategy.PrepareInput(r.inputLines, taskIndex, startLine, endLine)
-		if err != nil {
-			LogError("Failed to prepare input for task %d: %v", task.ID, err)
-			r.updateTaskStatus(taskIndex, TaskFailed)
-			return
-		}
-
-		var cmdParts []string
-		cmdParts, tempOutputFile = fileOutputStrategy.BuildCommandWithFileOutput(inputData, r.config.CommandArgs, task.ID)
-		r.runTaskWithCommand(taskIndex, cmdParts, true)
-
-	} else if r.strategy.NeedsFileChunk() {
-		// Tạo file chunk cho tools như httpx
-		startLine, endLine, err := r.parseLineRange(task.InputData)
-		if err != nil {
-			LogError("Failed to parse line range %s: %v", task.InputData, err)
-			r.updateTaskStatus(taskIndex, TaskFailed)
-			return
-		}
-
-		inputData, err := r.strategy.PrepareInput(r.inputLines, taskIndex, startLine, endLine)
-		if err != nil {
-			LogError("Failed to prepare input for task %d: %v", task.ID, err)
-			r.updateTaskStatus(taskIndex, TaskFailed)
-			return
-		}
-
-		// Build command using strategy
-		cmdParts := r.strategy.BuildCommand(inputData, r.config.CommandArgs)
-		r.runTaskWithCommand(taskIndex, cmdParts, false)
-	} else {
-		// Xử lý trực tiếp cho echo
-		r.runTaskDirect(taskIndex)
+		r.updateTaskStatus(taskIndex, TaskCompleted)
+		return
 	}
+
+	tempOutputFile = fmt.Sprintf("temp_output_%d.txt", task.ID)
+
+	switch r.toolConfig.Mode {
+	case "multiple":
+		startLine, endLine, err := r.parseLineRange(task.InputData)
+		if err != nil {
+			LogError("Failed to parse line range for task %d: %v", task.ID, err)
+			r.updateTaskStatus(taskIndex, TaskFailed)
+			return
+		}
+
+		chunkFile = fmt.Sprintf("chunk_%d.txt", taskIndex)
+		file, err := os.Create(chunkFile)
+		if err != nil {
+			LogError("Failed to create chunk file for task %d: %v", task.ID, err)
+			r.updateTaskStatus(taskIndex, TaskFailed)
+			return
+		}
+		for i := startLine; i <= endLine && i < len(r.inputLines); i++ {
+			if _, err := file.WriteString(r.inputLines[i] + "\n"); err != nil {
+				file.Close()
+				LogError("Failed to write to chunk file for task %d: %v", task.ID, err)
+				r.updateTaskStatus(taskIndex, TaskFailed)
+				return
+			}
+		}
+		file.Close()
+		inputData = chunkFile
+
+	case "single":
+		inputData = task.InputData
+
+	default:
+		LogError("Unknown tool mode: %s", r.toolConfig.Mode)
+		r.updateTaskStatus(taskIndex, TaskFailed)
+		return
+	}
+
+	cmdParts, err := r.configManager.BuildCommand(r.config.Command, inputData, r.config.CommandArgs, tempOutputFile, r.config.Wordlist)
+	if err != nil {
+		LogError("Failed to build command for task %d: %v", task.ID, err)
+		r.updateTaskStatus(taskIndex, TaskFailed)
+		return
+	}
+
+	// For all external tools, we expect them to write to a file, so we ignore their stdout.
+	r.runTaskWithCommand(taskIndex, cmdParts, true)
 }
 
 func (r *Runner) writeToOutput(content string) {
@@ -405,8 +425,8 @@ func (r *Runner) writeToOutput(content string) {
 	defer r.outputMutex.Unlock()
 
 	if r.outputFile != nil && content != "" {
-		// Write line to output file with newline
-		if _, err := r.outputFile.WriteString(content + "\n"); err != nil {
+		// Content already has newlines handled by the cleanup function
+		if _, err := r.outputFile.WriteString(content); err != nil {
 			LogError("Failed to write to output file: %v", err)
 		} else {
 			// Ensure data is written to disk immediately
@@ -416,7 +436,7 @@ func (r *Runner) writeToOutput(content string) {
 }
 
 func (r *Runner) monitor() error {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(1 * time.Second) // Check more frequently
 	defer ticker.Stop()
 
 	for {
@@ -427,7 +447,13 @@ func (r *Runner) monitor() error {
 			}
 		case <-r.signalHandler.InterruptChan():
 			LogWarn("Received interrupt signal, cleaning up...")
+			close(r.cancelChan) // Also trigger cancellation on Ctrl+C
 			return r.handleInterrupt()
+		case <-r.cancelChan:
+			LogWarn("Cancellation signal received, waiting for tasks to terminate...")
+			// Wait a bit for tasks to notice cancellation before returning
+			time.Sleep(2 * time.Second)
+			return nil
 		}
 	}
 }
@@ -526,31 +552,6 @@ func (r *Runner) displayPerformanceMetrics() {
 	LogPerf("===========================")
 }
 
-// runTaskDirect xử lý trực tiếp cho echo command
-func (r *Runner) runTaskDirect(taskIndex int) {
-	r.mu.RLock()
-	task := &r.tasks[taskIndex]
-	r.mu.RUnlock()
-
-	// Parse line range from task.InputData (format: "lines_start_end")
-	startLine, endLine, err := r.parseLineRange(task.InputData)
-	if err != nil {
-		LogError("Failed to parse line range %s: %v", task.InputData, err)
-		r.updateTaskStatus(taskIndex, TaskFailed)
-		return
-	}
-
-	LogTask(task.ID, "Started: %s (processing lines %d-%d)", task.WindowName, startLine, endLine)
-
-	// Process each line from memory and write directly to shared output file
-	for i := startLine; i <= endLine && i < len(r.inputLines); i++ {
-		r.writeToOutput(r.inputLines[i])
-	}
-
-	LogTask(task.ID, "completed successfully")
-	r.updateTaskStatus(taskIndex, TaskCompleted)
-}
-
 // runTaskWithCommand chạy command với external tools
 func (r *Runner) runTaskWithCommand(taskIndex int, cmdParts []string, ignoreStdout bool) {
 	r.mu.RLock()
@@ -637,6 +638,8 @@ func (r *Runner) runTaskWithCommand(taskIndex int, cmdParts []string, ignoreStdo
 	if err := cmd.Wait(); err != nil {
 		LogError("Task %d failed: %v", task.ID, err)
 		r.updateTaskStatus(taskIndex, TaskFailed)
+		// Signal other tasks to cancel
+		close(r.cancelChan)
 	} else {
 		// Wait for output goroutine to finish before marking as completed
 		wg.Wait()

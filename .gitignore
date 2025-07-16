@@ -1,3 +1,4 @@
 bulker.exe
 *.txt
 output/
+*.csv

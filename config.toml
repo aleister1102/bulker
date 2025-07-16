@@ -1,0 +1,21 @@
+[tools]
+
+  [tools.httpx]
+    description = "Fast HTTP toolkit for probing"
+    # 'multiple': Chunks input file for tools that accept a file path.
+    mode = "multiple"
+    command = "httpx -l {input} -o {output} {args}"
+
+  [tools.arjun]
+    description = "HTTP parameter discovery tool"
+    # 'single': One command execution per line in the input file.
+    mode = "single"
+    command = "arjun -u {input} -o {output} {auto_optimizations} {args}"
+    auto_optimizations = ["-t 10", "-d 0", "--rate-limit 50", "-T 5"]
+
+  [tools.ffuf]
+    description = "Fast web fuzzer"
+    mode = "single"
+    command = "ffuf -w {wordlist} -u {input}/FUZZ -o {output} -of csv {auto_optimizations} {args}"
+    auto_optimizations = ["-t 20", "-p 0.1", "-rate 100", "-timeout 5"]
+    header = "FUZZ,url,redirectlocation,position,status_code,content_length,content_words,content_lines,content_type,duration,resultfile,Ffufhash"
