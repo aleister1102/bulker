@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -79,9 +80,22 @@ func runCommand(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// ffuf-specific validation
-	if command == "ffuf" && wordlist == "" {
-		LogError("Error: --wl (wordlist) flag is required when running ffuf")
+	// Kiểm tra cấu hình tool để xác định các yêu cầu đặc biệt
+	configManager, err := NewConfigManager(configFile)
+	if err != nil {
+		LogError("Error loading config file: %v", err)
+		os.Exit(1)
+	}
+	
+	toolConfig, exists := configManager.GetToolConfig(command)
+	if !exists {
+		LogError("Error: tool '%s' not found in config file", command)
+		os.Exit(1)
+	}
+	
+	// Kiểm tra xem tool có yêu cầu wordlist không
+	if strings.Contains(toolConfig.Command, "{wordlist}") && wordlist == "" {
+		LogError("Error: --wl (wordlist) flag is required when running %s", command)
 		os.Exit(1)
 	}
 
@@ -116,24 +130,44 @@ func runCommand(cmd *cobra.Command, args []string) {
 func listTools(cmd *cobra.Command, args []string) {
 	configManager, err := NewConfigManager(configFile)
 	if err != nil {
-		LogWarn("Could not load config file: %v. Listing built-in tools only.", err)
+		LogWarn("Could not load config file: %v. No tools available.", err)
+		return
 	}
 
 	fmt.Println("Available tools:")
+	fmt.Println("================")
 
-	// Get tools from config file (will be empty if config fails)
+	// Get tools from config file
 	tools := configManager.GetAllTools()
-
-	// Add built-in echo
-	tools = append(tools, ToolConfig{Name: "echo", Description: "Simple text processing and output"})
-
-	// Sort again just in case (or handle insertion sort)
+	
+	// Sort by name
 	sort.Slice(tools, func(i, j int) bool {
 		return tools[i].Name < tools[j].Name
 	})
 
 	for _, tool := range tools {
-		fmt.Printf("  %-10s %s\n", tool.Name, tool.Description)
+		fmt.Printf("\n%s\n", tool.Name)
+		fmt.Printf("  Description: %s\n", tool.Description)
+		
+		if len(tool.AutoOptimizations) > 0 {
+			fmt.Printf("  Auto optimizations: %s\n", strings.Join(tool.AutoOptimizations, " "))
+		}
+		
+		if len(tool.Examples) > 0 {
+			fmt.Printf("  Examples:\n")
+			for _, example := range tool.Examples {
+				fmt.Printf("    %s\n", example)
+			}
+		}
 	}
-	fmt.Println("\nUsage: bulker run <tool> --input <file> [flags]")
+	
+	fmt.Println("\nGeneral Usage:")
+	fmt.Println("  bulker run <tool> --input <file> --output <file> [flags]")
+	fmt.Println("\nCommon flags:")
+	fmt.Println("  -i, --input <file>     Input file path (required)")
+	fmt.Println("  -o, --output <file>    Output file path (required)")
+	fmt.Println("  -w, --workers <num>    Number of parallel workers (default: 4)")
+	fmt.Println("  -e, --extra-args       Extra arguments to pass to the tool")
+	fmt.Println("  --wl <file>           Wordlist file (required for ffuf)")
+	fmt.Println("  -c, --config <file>    Custom config file (default: config.toml)")
 }

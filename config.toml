@@ -19,3 +19,23 @@
     command = "ffuf -w {wordlist} -u {input}/FUZZ -o {output} -of csv {auto_optimizations} {args}"
     auto_optimizations = ["-t 20", "-p 0.1", "-rate 100", "-timeout 5"]
     header = "FUZZ,url,redirectlocation,position,status_code,content_length,content_words,content_lines,content_type,duration,resultfile,Ffufhash"
+
+  [tools.alterx]
+    description = "Fast and customizable subdomain wordlist generator using DSL"
+    mode = "single"
+    command = "alterx -l {input} -o {output} {auto_optimizations} {args}"
+    auto_optimizations = ["-v"]
+    examples = [
+      "bulker run alterx -i domains.txt -o subdomains.txt",
+      "bulker run alterx -i domains.txt -o subdomains.txt -e -p custom-patterns.txt",
+      "bulker run alterx -i domains.txt -o subdomains.txt -e --limit 1000"
+    ]
+    
+  [tools.echo]
+    description = "Simple text processing and output"
+    mode = "single"
+    command = "echo {input} > {output}"
+    examples = [
+      "bulker run echo -i input.txt -o output.txt",
+      "bulker run echo -i input.txt -o output.txt -e \"--append\""
+    ]

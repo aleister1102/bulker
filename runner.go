@@ -63,26 +63,15 @@ const (
 func NewRunner(config RunnerConfig) (*Runner, error) {
 	configManager, err := NewConfigManager(config.ConfigFile)
 	if err != nil {
-		LogWarn("Could not load config file: %v. Only 'echo' command will be available.", err)
+		return nil, fmt.Errorf("could not load config file: %v", err)
 	}
 
 	var toolConfig ToolConfig
 	var exists bool
 
-	if configManager != nil {
-		toolConfig, exists = configManager.GetToolConfig(config.Command)
-	}
-
+	toolConfig, exists = configManager.GetToolConfig(config.Command)
 	if !exists {
-		if config.Command == "echo" {
-			toolConfig = ToolConfig{
-				Description: "Simple text processing and output",
-				Mode:        "single", // or "multiple", echo can work both ways
-				Command:     "echo {input}",
-			}
-		} else {
-			return nil, fmt.Errorf("tool '%s' not found in config file '%s'", config.Command, config.ConfigFile)
-		}
+		return nil, fmt.Errorf("tool '%s' not found in config file '%s'", config.Command, config.ConfigFile)
 	}
 
 	return &Runner{
@@ -355,21 +344,7 @@ func (r *Runner) runTask(taskIndex int) {
 	}
 	defer cleanupFunc()
 
-	// Handle 'echo' as a special case
-	if r.config.Command == "echo" {
-		if r.toolConfig.Mode == "single" {
-			r.writeToOutput(task.InputData)
-		} else { // "multiple"
-			startLine, endLine, err := r.parseLineRange(task.InputData)
-			if err == nil {
-				for i := startLine; i <= endLine && i < len(r.inputLines); i++ {
-					r.writeToOutput(r.inputLines[i])
-				}
-			}
-		}
-		r.updateTaskStatus(taskIndex, TaskCompleted)
-		return
-	}
+	// Tất cả các tool đều được xử lý thông qua config
 
 	tempOutputFile = fmt.Sprintf("temp_output_%d.txt", task.ID)
 
