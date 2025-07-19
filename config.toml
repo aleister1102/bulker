@@ -39,3 +39,155 @@
       "bulker run echo -i input.txt -o output.txt",
       "bulker run echo -i input.txt -o output.txt -e \"--append\""
     ]
+
+  [tools.x8]
+    description = "Hidden parameters discovery suite"
+    # 'multiple': Use chunked input files for efficient parallel processing
+    mode = "multiple"
+    command = "x8 -u {input} -o {output} {auto_optimizations} {args}"
+    # Reasonable defaults for speed & stability; adjust as needed
+    auto_optimizations = ["-W 5", "-c 2", "--follow-redirects", "--mimic-browser"]
+    examples = [
+      "bulker run x8 -i urls.txt -o params.txt",
+      "bulker run x8 -i urls.txt -o params.txt -e '--strict' -e '--verify'"
+    ]
+
+  [tools.cewler]
+    description = "Custom wordlist generator from website crawl"
+    mode = "single"
+    command = "cewler {input} -o {output} {auto_optimizations} {args}"
+    auto_optimizations = ["-d 2", "-l", "-m 5", "-r 20"]
+    examples = [
+      "bulker run cewler -i https://example.com -o wordlist.txt",
+      "bulker run cewler -i https://example.com -o wordlist.txt -e '--include-js' -e '--include-css'"
+    ]
+
+  [tools.favicorn]
+    description = "Get favicon hashes from multiple sources"
+    mode = "single"
+    command = "favicorn -u {input} --no-logo {auto_optimizations} {args} > {output}"
+    auto_optimizations = []
+    examples = [
+      "bulker run favicorn -i https://example.com/favicon.ico -o hash.txt",
+      "bulker run favicorn -i example.com -o favicon_hash.txt -e '--add-from-search-engines'"
+    ]
+
+  [tools.gospider]
+    description = "Fast web spider and URL collector"
+    mode = "multiple" # accepts a file list via -S
+    command = "gospider -S {input} {auto_optimizations} {args} > {output}"
+    auto_optimizations = ["-t 4", "-c 10", "-d 1", "--quiet", "--js"]
+    examples = [
+      "bulker run gospider -i urls.txt -o spider.txt",
+      "bulker run gospider -i urls.txt -o spider.txt -e '--subs' -e '--json'"
+    ]
+
+  [tools.massdns]
+    description = "Mass DNS resolver"
+    mode = "multiple"
+    command = "massdns -o S -w {output} {auto_optimizations} {args} {input}"
+    auto_optimizations = ["-r resolvers.txt", "-t A", "-q", "-s 10000"]
+    examples = [
+      "bulker run massdns -i subdomains.txt -o resolved.txt -t 4",
+      "bulker run massdns -i subdomains.txt -o resolved.txt -t 6 -e '-r' -e 'clean-resolvers.txt'"
+    ]
+
+  [tools.nuclei]
+    description = "Template-based vulnerability scanner"
+    mode = "multiple"
+    command = "nuclei -l {input} -o {output} {auto_optimizations} {args}"
+    auto_optimizations = ["-c 50", "-rate-limit 200", "-silent", "-nc"]
+    examples = [
+      "bulker run nuclei -i hosts.txt -o findings.txt -t 4 -- -t 'cves/'",
+      "bulker run nuclei -i hosts.txt -o findings.txt -t 6 -- -tags 'critical,high'"
+    ]
+
+  [tools.shuffledns]
+    description = "Subdomain enumeration via massdns"
+    mode = "multiple"
+    command = "shuffledns -list {input} -o {output} {auto_optimizations} {args}"
+    auto_optimizations = ["-r resolvers.txt", "-t 10000", "-silent"]
+    examples = [
+      "bulker run shuffledns -i subdomains.txt -o valid.txt -t 4",
+      "bulker run shuffledns -i subdomains.txt -o valid.txt -t 6 -e '-r' -e 'clean-resolvers.txt'"
+    ]
+
+  [tools.subfinder]
+    description = "Passive subdomain discovery"
+    mode = "multiple"
+    command = "subfinder -dL {input} -o {output} {auto_optimizations} {args}"
+    auto_optimizations = ["-silent", "-all"]
+    examples = [
+      "bulker run subfinder -i domains.txt -o subdomains.txt -t 4",
+      "bulker run subfinder -i domains.txt -o subdomains.txt -t 6 -- -es 'github,shodan'"
+    ]
+
+  [tools.nomore403]
+    description = "40X bypass automation"
+    mode = "single"
+    command = "nomore403 -u {input} --no-banner {auto_optimizations} {args} > {output}"
+    auto_optimizations = ["-m 100", "--random-agent", "-r"]
+    examples = [
+      "bulker run nomore403 -i https://example.com/secret -o bypass.txt",
+      "bulker run nomore403 -i https://example.com/admin -o bypass.txt -e '--technique' -e 'headers'"
+    ]
+
+  [tools.subdominator]
+    description = "Subdomain takeover detection"
+    mode = "multiple"
+    command = "subdominator -l {input} -o {output} {auto_optimizations} {args}"
+    auto_optimizations = ["-t 50", "-q", "-eu"]
+    examples = [
+      "bulker run subdominator -i subdomains.txt -o takeovers.txt -t 4",
+      "bulker run subdominator -i subdomains.txt -o takeovers.txt -t 6 -- --validate"
+    ]
+
+  [tools.waybacklister]
+    description = "Directory listing detection via Wayback Machine"
+    mode = "multiple"
+    command = "waybacklister -f {input} -t 10 {auto_optimizations} {args} > {output}"
+    auto_optimizations = []
+    examples = [
+      "bulker run waybacklister -i domains.txt -o listings.txt -t 4",
+      "bulker run waybacklister -i domains.txt -o listings.txt -t 4 -- -t 20"
+    ]
+
+  [tools.smugglefuzz]
+    description = "HTTP request smuggling scanner"
+    mode = "single"
+    command = "smugglefuzz scan -u {input} {auto_optimizations} {args} > {output}"
+    auto_optimizations = []
+    examples = [
+      "bulker run smugglefuzz -i https://example.com -o smuggle.txt -t 1",
+      "bulker run smugglefuzz -i https://example.com -o smuggle.txt -t 1 -- -e"  # extended gadgets
+    ]
+
+  [tools.dalfox]
+    description = "Parameter analysis & XSS scanner"
+    mode = "multiple"
+    command = "dalfox file {input} -o {output} --silence {auto_optimizations} {args}"
+    auto_optimizations = ["-w 80"]
+    examples = [
+      "bulker run dalfox -i urls.txt -o xss.txt -t 4",
+      "bulker run dalfox -i urls.txt -o xss.txt -t 6 -- -w 120 -b my.xss.ht"
+    ]
+
+  [tools.wpscan]
+    description = "WordPress security scanner"
+    mode = "single"
+    command = "wpscan --url {input} -o {output} {auto_optimizations} {args}"
+    auto_optimizations = ["--random-user-agent", "--no-banner", "-t 10"]
+    examples = [
+      "bulker run wpscan -i https://example.com -o wp.txt -t 1",
+      "bulker run wpscan -i https://example.com -o wp.txt -t 1 -- --enumerate vp,vt,u"
+    ]
+
+  [tools.sourcemapper]
+    description = "JavaScript source mapping extractor"
+    mode = "single"
+    command = "sourcemapper -url {input} -output {output} {auto_optimizations} {args}"
+    auto_optimizations = ["-insecure"]
+    examples = [
+      "bulker run sourcemapper -i https://example.com/app.js.map -o src_dir -t 1",
+      "bulker run sourcemapper -i https://example.com/app.js -o src_dir -t 1 -- -jsurl"  # with jsurl option
+    ]

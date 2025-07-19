@@ -19,6 +19,21 @@
 | **httpx** | HTTP toolkit | Filters output flags | Web probing, status checking |
 | **arjun** | Parameter discovery | `-t 10 -d 0 --rate-limit 50 -T 5` | Parameter fuzzing |
 | **ffuf** | Web fuzzer | `-t 20 -p 0.1 -rate 100 -timeout 5` | Directory/file fuzzing |
+| **x8** | Hidden parameters discovery | `-W 5 -c 2 --follow-redirects --mimic-browser` | Parameter enumeration |
+| **cewler** | Wordlist generator | `-d 2 -l -m 5 -r 20` | Crawl-based wordlists |
+| **favicorn** | Favicon hash extractor | `--verbose` | Favicon reconnaissance |
+| **gospider** | Web crawler / URL collector | `-t 4 -c 10 -d 1 --quiet --js` | Enumeration |
+| **massdns** | Mass DNS resolver | `-r resolvers.txt -t A -q -s 10000` | DNS resolution |
+| **nuclei** | Vulnerability scanner | `-c 50 -rate-limit 200 -silent -nc` | Vulnerability scanning |
+| **shuffledns** | Subdomain enumeration | `-r resolvers.txt -t 10000 -silent` | DNS bruteforce |
+| **subfinder** | Passive subdomain discovery | `-silent -all` | Recon |
+| **nomore403** | 40X bypass automation | `-m 100 --random-agent -r` | Access control bypass |
+| **subdominator** | Subdomain takeover detector | `-t 50 -q -eu` | Takeover detection |
+| **waybacklister** | Directory listing finder | `-t 10` | Wayback scanning |
+| **smugglefuzz** | HTTP smuggling scanner | - | Request smuggling |
+| **dalfox** | XSS scanner | `-w 80 --silence` | XSS detection |
+| **wpscan** | WordPress scanner | `--random-user-agent -t 10 --no-banner` | CMS vulnerabilities |
+| **sourcemapper** | JS source map extractor | `-insecure` | Source disclosure |
 | **echo** | Text processing | Direct processing | Data manipulation |
 
 ## 📦 Installation
@@ -39,13 +54,40 @@ go build -o bulker.exe .
 .\bulker.exe list
 
 # Run httpx with auto-optimization
-.\bulker.exe run httpx -i domains.txt -w 4 -- -sc -rt -title
+.\bulker.exe run httpx -i domains.txt -t 4 -- -sc -rt -title
 
 # Run arjun with custom method
-.\bulker.exe run arjun -i urls.txt -w 2 -e '-m' -e 'POST' -- -oT params.txt
+.\bulker.exe run arjun -i urls.txt -t 2 -e '-m' -e 'POST' -- -oT params.txt
 
 # Run ffuf with authorization header
-.\bulker.exe run ffuf -i targets.txt -w 3 -e '-H' -e 'Auth: Bearer token' -- -w wordlist.txt -u https://target.com/FUZZ
+.\bulker.exe run ffuf -i targets.txt -t 3 -w wordlist.txt -e '-H' -e 'Auth: Bearer token' -- -u https://target.com/FUZZ
+
+# Run gospider to crawl URLs
+.\bulker.exe run gospider -i urls.txt -o spider.txt -t 4 -- --subs --json
+
+# Run massdns to resolve subdomains
+.\bulker.exe run massdns -i subdomains.txt -o resolved.txt -t 4 -- -e '-r' -e 'public-resolvers.txt'
+
+# Run nuclei with default templates
+.\bulker.exe run nuclei -i hosts.txt -o findings.txt -t 4 -- -t 'cves/'
+
+# Run shuffledns to validate subdomains
+.\bulker.exe run shuffledns -i subdomains.txt -o valid.txt -t 4 -- -e '-r' -e 'clean-resolvers.txt'
+
+# Run subfinder to enumerate subdomains
+.\bulker.exe run subfinder -i domains.txt -o subdomains.txt -t 4
+
+# Run smugglefuzz to test HTTP smuggling
+.\bulker.exe run smugglefuzz -i https://example.com -o smuggle.txt -t 1 -- -e
+
+# Run dalfox for XSS scanning
+.\bulker.exe run dalfox -i urls.txt -o xss.txt -t 4
+
+# Run wpscan against a WordPress site
+.\bulker.exe run wpscan -i https://example.com -o wp.txt -t 1 -- --enumerate vp,vt,u
+
+# Run sourcemapper to extract source map
+.\bulker.exe run sourcemapper -i https://example.com/app.js.map -o src_dir -t 1
 ```
 
 ## 📋 Usage
@@ -63,7 +105,8 @@ go build -o bulker.exe .
 |------|-------------|---------|---------|
 | `-i, --input` | Input file path (required) | - | `-i urls.txt` |
 | `-o, --output` | Output file path | `output.txt` | `-o results.txt` |
-| `-w, --workers` | Number of parallel workers | `4` | `-w 8` |
+| `-t, --threads` | Number of parallel threads | `4` | `-t 8` |
+| `-w, --wordlist` | Wordlist file for tools like ffuf | - | `-w wordlist.txt` |
 | `-e, --extra-args` | Extra arguments for tool | `[]` | `-e '-H' -e 'Custom: header'` |
 
 ### Advanced Examples
@@ -71,10 +114,10 @@ go build -o bulker.exe .
 #### HTTPx - Web Probing
 ```bash
 # Basic probing with status codes and response time
-.\bulker.exe run httpx -i domains.txt -w 4 -- -sc -rt -title
+.\bulker.exe run httpx -i domains.txt -t 4 -- -sc -rt -title
 
 # With custom headers and technology detection
-.\bulker.exe run httpx -i urls.txt -w 6 -e '-H' -e 'User-Agent: Scanner/1.0' -- -sc -rt -tech-detect
+.\bulker.exe run httpx -i urls.txt -t 6 -e '-H' -e 'User-Agent: Scanner/1.0' -- -sc -rt -tech-detect
 
 # Silent mode with JSON output
 .\bulker.exe run httpx -i targets.txt -- -silent -json -sc -cl
@@ -83,10 +126,10 @@ go build -o bulker.exe .
 #### Arjun - Parameter Discovery
 ```bash
 # GET method parameter discovery
-.\bulker.exe run arjun -i urls.txt -w 2 -- -oT parameters.txt
+.\bulker.exe run arjun -i urls.txt -t 2 -- -oT parameters.txt
 
 # POST method with custom wordlist
-.\bulker.exe run arjun -i endpoints.txt -w 3 -e '-m' -e 'POST' -e '-w' -e 'custom.txt' -- -oT post_params.txt
+.\bulker.exe run arjun -i endpoints.txt -t 3 -e '-m' -e 'POST' -e '-w' -e 'custom.txt' -- -oT post_params.txt
 
 # Passive discovery with multiple methods
 .\bulker.exe run arjun -i targets.txt -e '--passive' -e '-m' -e 'GET,POST' -- -oT all_params.txt
@@ -95,13 +138,13 @@ go build -o bulker.exe .
 #### Ffuf - Web Fuzzing
 ```bash
 # Directory fuzzing
-.\bulker.exe run ffuf -i baseUrls.txt -w 4 -- -w directories.txt -u https://target.com/FUZZ -mc 200,403
+.\bulker.exe run ffuf -i baseUrls.txt -t 4 -w directories.txt -- -u https://target.com/FUZZ -mc 200,403
 
 # File extension fuzzing with filters
-.\bulker.exe run ffuf -i urls.txt -w 3 -- -w filenames.txt -e '.php,.asp,.jsp' -u https://target.com/FUZZ -fs 42
+.\bulker.exe run ffuf -i urls.txt -t 3 -w filenames.txt -- -e '.php,.asp,.jsp' -u https://target.com/FUZZ -fs 42
 
 # Subdomain fuzzing with custom matcher
-.\bulker.exe run ffuf -i domains.txt -e '-H' -e 'Host: FUZZ.target.com' -- -w subdomains.txt -u https://target.com/ -mc 200
+.\bulker.exe run ffuf -i domains.txt -t 4 -w subdomains.txt -e '-H' -e 'Host: FUZZ.target.com' -- -u https://target.com/ -mc 200
 ```
 
 ## 🏗️ Architecture
@@ -120,22 +163,19 @@ Input File → Chunking → Parallel Workers → Output Consolidation
 ```
 User Command → Tool Detection → Config Lookup → Command Building → Execution
      ↓              ↓              ↓               ↓              ↓
-  "run arjun"  ConfigManager  config.json  Template Fill  "arjun -u {input} -t 10 -d 0"
+  "run arjun"  ConfigManager  config.toml  Template Fill  "arjun -u {input} -t 10 -d 0"
 ```
 
 ### Configuration Structure
-The tool configurations are defined in `config.json`:
-```json
-{
-  "tools": {
-    "httpx": {
-      "description": "Fast HTTP toolkit for probing",
-      "needsFileChunk": true,
-      "command": "httpx -l {input} {args}",
-      "autoOptimizations": [],
-      "filterFlags": ["-o"]
-    }
-  }
+The tool configurations are defined in `config.toml`:
+```toml
+[tools]
+httpx = {
+  description = "Fast HTTP toolkit for probing",
+  needsFileChunk = true,
+  command = "httpx -l {input} {args}",
+  autoOptimizations = [],
+  filterFlags = ["-o"]
 }
 ```
 
@@ -149,7 +189,7 @@ The tool configurations are defined in `config.json`:
 
 ### Example Performance Output
 ```
-[INFO] Total lines: 1000, Workers: 4, Chunk size: 250
+[INFO] Total lines: 1000, Threads: 4, Chunk size: 250
 [TASK-0] Started: worker_0 (PID: 12345)
 [TASK-1] Started: worker_1 (PID: 12346)
 ...
@@ -209,7 +249,7 @@ project/
 |-------|----------|
 | Tool not found | Ensure tool is in PATH or provide full path |
 | Permission denied | Check file permissions and antivirus settings |
-| High memory usage | Reduce worker count with `-w` flag |
+| High memory usage | Reduce thread count with `-t` flag |
 | Network timeouts | Tools auto-optimize timeouts, or use `-e` for custom values |
 
 ## 🔍 Troubleshooting
@@ -217,7 +257,7 @@ project/
 ### Debug Mode
 ```bash
 # View detailed execution
-.\bulker.exe run httpx -i urls.txt -w 1 -- -verbose
+.\bulker.exe run httpx -i urls.txt -t 1 -- -verbose
 
 # Check tool installation
 httpx -version
@@ -228,40 +268,37 @@ ffuf -V
 ### Performance Tuning
 ```bash
 # CPU-bound tasks (parsing, filtering)
-.\bulker.exe run tool -i input.txt -w [CPU_CORES]
+.\bulker.exe run tool -i input.txt -t [CPU_CORES]
 
 # Network-bound tasks (web requests)  
-.\bulker.exe run tool -i input.txt -w [2-4x CPU_CORES]
+.\bulker.exe run tool -i input.txt -t [2-4x CPU_CORES]
 
 # Memory-limited environments
-.\bulker.exe run tool -i input.txt -w 2
+.\bulker.exe run tool -i input.txt -t 2
 ```
 
 ## 🤝 Contributing
 
 1. Fork the repository
 2. Create feature branch: `git checkout -b feature/amazing-feature`
-3. Add new tool configuration to `config.json`
+3. Add new tool configuration to `config.toml`
 4. Test thoroughly and submit PR
 
 ### Adding New Tools
-Simply add your tool configuration to `config.json`:
+Simply add your tool configuration to `config.toml`:
 
-```json
-{
-  "tools": {
-    "mytool": {
-      "description": "My awesome security tool",
-      "needsFileChunk": false,
-      "handlesFileOutput": true,
-      "command": "mytool -u {input} {autoOptimizations} {args}",
-      "autoOptimizations": ["-t", "10", "--fast"],
-      "filterFlags": ["-o"],
-      "examples": [
-        "bulker run mytool -i targets.txt -w 4 -- --scan-all"
-      ]
-    }
-  }
+```toml
+[tools]
+mytool = {
+  description = "My awesome security tool",
+  needsFileChunk = false,
+  handlesFileOutput = true,
+  command = "mytool -u {input} {autoOptimizations} {args}",
+  autoOptimizations = ["-t", "10", "--fast"],
+  filterFlags = ["-o"],
+  examples = [
+    "bulker run mytool -i targets.txt -t 4 -- --scan-all"
+  ]
 }
 ```
 

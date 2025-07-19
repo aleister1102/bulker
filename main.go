@@ -44,10 +44,11 @@ func init() {
 
 	runCmd.Flags().StringVarP(&inputFile, "input", "i", "", "Input file path (required for running a tool)")
 	runCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file path (required)")
-	runCmd.Flags().IntVarP(&workers, "workers", "w", 4, "Number of parallel workers")
+	// Change short flag from -w to -t to avoid conflict with wordlist flag (-w in tools like ffuf)
+	runCmd.Flags().IntVarP(&workers, "threads", "t", 4, "Number of parallel threads")
 	runCmd.Flags().StringArrayVarP(&extraArgs, "extra-args", "e", []string{}, "Extra arguments to pass to the tool (can be used multiple times)")
 	runCmd.Flags().StringVarP(&configFile, "config", "c", "config.toml", "Path to custom config file")
-	runCmd.Flags().StringVar(&wordlist, "wl", "", "Path to wordlist file (for tools like ffuf)")
+	runCmd.Flags().StringVarP(&wordlist, "wordlist", "w", "", "Path to wordlist file (for tools like ffuf)")
 
 	listCmd.Flags().StringVarP(&configFile, "config", "c", "config.toml", "Path to custom config file")
 }
@@ -86,16 +87,16 @@ func runCommand(cmd *cobra.Command, args []string) {
 		LogError("Error loading config file: %v", err)
 		os.Exit(1)
 	}
-	
+
 	toolConfig, exists := configManager.GetToolConfig(command)
 	if !exists {
 		LogError("Error: tool '%s' not found in config file", command)
 		os.Exit(1)
 	}
-	
+
 	// Kiểm tra xem tool có yêu cầu wordlist không
 	if strings.Contains(toolConfig.Command, "{wordlist}") && wordlist == "" {
-		LogError("Error: --wl (wordlist) flag is required when running %s", command)
+		LogError("Error: -w/--wordlist flag is required when running %s", command)
 		os.Exit(1)
 	}
 
@@ -139,7 +140,7 @@ func listTools(cmd *cobra.Command, args []string) {
 
 	// Get tools from config file
 	tools := configManager.GetAllTools()
-	
+
 	// Sort by name
 	sort.Slice(tools, func(i, j int) bool {
 		return tools[i].Name < tools[j].Name
@@ -148,11 +149,11 @@ func listTools(cmd *cobra.Command, args []string) {
 	for _, tool := range tools {
 		fmt.Printf("\n%s\n", tool.Name)
 		fmt.Printf("  Description: %s\n", tool.Description)
-		
+
 		if len(tool.AutoOptimizations) > 0 {
 			fmt.Printf("  Auto optimizations: %s\n", strings.Join(tool.AutoOptimizations, " "))
 		}
-		
+
 		if len(tool.Examples) > 0 {
 			fmt.Printf("  Examples:\n")
 			for _, example := range tool.Examples {
@@ -160,14 +161,14 @@ func listTools(cmd *cobra.Command, args []string) {
 			}
 		}
 	}
-	
+
 	fmt.Println("\nGeneral Usage:")
 	fmt.Println("  bulker run <tool> --input <file> --output <file> [flags]")
 	fmt.Println("\nCommon flags:")
 	fmt.Println("  -i, --input <file>     Input file path (required)")
 	fmt.Println("  -o, --output <file>    Output file path (required)")
-	fmt.Println("  -w, --workers <num>    Number of parallel workers (default: 4)")
+	fmt.Println("  -t, --threads <num>    Number of parallel threads (default: 4)")
 	fmt.Println("  -e, --extra-args       Extra arguments to pass to the tool")
-	fmt.Println("  --wl <file>           Wordlist file (required for ffuf)")
+	fmt.Println("  -w, --wordlist <file>  Wordlist file (required for ffuf)")
 	fmt.Println("  -c, --config <file>    Custom config file (default: config.toml)")
 }
