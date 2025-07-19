@@ -58,5 +58,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/bulker-ubuntu-latest/bulker
-            artifacts/bulker-windows-latest/bulker.exe 
+            artifacts/bulker-Linux/bulker
+            artifacts/bulker-Windows/bulker.exe 
