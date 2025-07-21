@@ -22,7 +22,7 @@
 
   [tools.alterx]
     description = "Fast and customizable subdomain wordlist generator using DSL"
-    mode = "single"
+    mode = "multiple"
     command = "alterx -l {input} -o {output} {auto_optimizations} {args}"
     auto_optimizations = ["-v"]
     examples = [
