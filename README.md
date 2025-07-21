@@ -6,7 +6,7 @@ A parallel runner for security tools with automatic optimisations.
 
 **Build**
 ```bash
-git clone https://github.com/youruser/bulker.git
+git clone https://github.com/aleister1102/bulker.git
 cd bulker
 go build -o bulker # or bulker.exe for Windows
 ```
