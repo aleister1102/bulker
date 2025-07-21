@@ -86,13 +86,21 @@ func NewRunner(config RunnerConfig) (*Runner, error) {
 }
 
 func (r *Runner) readInputFile() error {
-	file, err := os.Open(r.config.InputFile)
-	if err != nil {
-		return fmt.Errorf("failed to open input file: %w", err)
-	}
-	defer file.Close()
+	var scanner *bufio.Scanner
 
-	scanner := bufio.NewScanner(file)
+	// If no input file is specified, read from stdin
+	if r.config.InputFile == "" {
+		LogInfo("Reading input from stdin")
+		scanner = bufio.NewScanner(os.Stdin)
+	} else {
+		file, err := os.Open(r.config.InputFile)
+		if err != nil {
+			return fmt.Errorf("failed to open input file: %w", err)
+		}
+		defer file.Close()
+		scanner = bufio.NewScanner(file)
+	}
+
 	r.inputLines = make([]string, 0)
 
 	for scanner.Scan() {
@@ -103,10 +111,10 @@ func (r *Runner) readInputFile() error {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error reading input file: %w", err)
+		return fmt.Errorf("error reading input: %w", err)
 	}
 
-	LogInfo("Read %d lines from input file", len(r.inputLines))
+	LogInfo("Read %d lines of input", len(r.inputLines))
 	return nil
 }
 

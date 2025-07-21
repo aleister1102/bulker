@@ -55,7 +55,7 @@ bulker run httpx -i domains.txt -o httpx_out.txt -t 8 -- -sc -title
 
 | Flag           | Description                          |
 |----------------|--------------------------------------|
-| `-i, --input`  | Input file (required)                |
+| `-i, --input <file>`     Input file path (optional – leave blank to supply input via stdin)
 | `-o, --output` | Output file                          |
 | `-t, --threads`| Parallel threads (default 4)         |
 | `-w, --wordlist`| Wordlist for tools like ffuf       |

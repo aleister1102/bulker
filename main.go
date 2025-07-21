@@ -42,7 +42,7 @@ func init() {
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(listCmd)
 
-	runCmd.Flags().StringVarP(&inputFile, "input", "i", "", "Input file path (required for running a tool)")
+	runCmd.Flags().StringVarP(&inputFile, "input", "i", "", "Input file path (leave empty to read from stdin)")
 	runCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file path (required)")
 	// Change short flag from -w to -t to avoid conflict with wordlist flag (-w in tools like ffuf)
 	runCmd.Flags().IntVarP(&workers, "threads", "t", 4, "Number of parallel threads")
@@ -107,12 +107,18 @@ func runCommand(cmd *cobra.Command, args []string) {
 
 	command := args[0]
 
-	// If a tool is specified, input and output files are required
-	if inputFile == "" {
-		LogError("Error: --input flag is required when running a command")
+	// Determine if stdin is being piped
+	stdinInfo, _ := os.Stdin.Stat()
+	stdinIsPipe := stdinInfo.Mode()&os.ModeCharDevice == 0
+
+	// Validate input source
+	if inputFile == "" && !stdinIsPipe {
+		LogError("Error: --input flag is required when running a command (or provide input via stdin)")
 		cmd.Help()
 		os.Exit(1)
 	}
+
+	// Output file is always required
 	if outputFile == "" {
 		LogError("Error: --output flag is required when running a command")
 		cmd.Help()
