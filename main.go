@@ -46,7 +46,7 @@ func init() {
 	runCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file path (required)")
 	// Change short flag from -w to -t to avoid conflict with wordlist flag (-w in tools like ffuf)
 	runCmd.Flags().IntVarP(&workers, "threads", "t", 4, "Number of parallel threads")
-	runCmd.Flags().StringArrayVarP(&extraArgs, "extra-args", "e", []string{}, "Extra arguments to pass to the tool (can be used multiple times)")
+	runCmd.Flags().StringArrayVarP(&extraArgs, "extra-args", "e", []string{}, "Extra arguments to pass to the tool (supports multiple args in one flag: -e '--strict --verify')")
 	runCmd.Flags().StringVarP(&configFile, "config", "c", "config.toml", "Path to custom config file")
 	runCmd.Flags().StringVarP(&wordlist, "wordlist", "w", "", "Path to wordlist file (for tools like ffuf)")
 
@@ -58,6 +58,44 @@ func main() {
 		LogError("%v", err)
 		os.Exit(1)
 	}
+}
+
+// splitArgsRespectingQuotes splits a string into arguments while respecting quoted strings
+func splitArgsRespectingQuotes(input string) []string {
+	if strings.TrimSpace(input) == "" {
+		return []string{}
+	}
+
+	var args []string
+	var current strings.Builder
+	inQuotes := false
+	quoteChar := byte(0)
+
+	for i := 0; i < len(input); i++ {
+		char := input[i]
+
+		switch {
+		case (char == '"' || char == '\'') && !inQuotes:
+			inQuotes = true
+			quoteChar = char
+		case char == quoteChar && inQuotes:
+			inQuotes = false
+			quoteChar = 0
+		case char == ' ' && !inQuotes:
+			if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteByte(char)
+		}
+	}
+
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+
+	return args
 }
 
 func runCommand(cmd *cobra.Command, args []string) {
@@ -102,9 +140,15 @@ func runCommand(cmd *cobra.Command, args []string) {
 
 	commandArgs := args[1:]
 
-	// Append extra args if provided
+	// Process extra args - split each arg string by spaces to allow multiple args in one flag
 	if len(extraArgs) > 0 {
-		commandArgs = append(commandArgs, extraArgs...)
+		var processedArgs []string
+		for _, arg := range extraArgs {
+			// Split by spaces while preserving quoted strings
+			splitArgs := splitArgsRespectingQuotes(arg)
+			processedArgs = append(processedArgs, splitArgs...)
+		}
+		commandArgs = append(commandArgs, processedArgs...)
 	}
 
 	runner, err := NewRunner(RunnerConfig{
@@ -169,6 +213,7 @@ func listTools(cmd *cobra.Command, args []string) {
 	fmt.Println("  -o, --output <file>    Output file path (required)")
 	fmt.Println("  -t, --threads <num>    Number of parallel threads (default: 4)")
 	fmt.Println("  -e, --extra-args       Extra arguments to pass to the tool")
+	fmt.Println("                         Examples: -e '--strict --verify' or -e '--timeout 30'")
 	fmt.Println("  -w, --wordlist <file>  Wordlist file (required for ffuf)")
 	fmt.Println("  -c, --config <file>    Custom config file (default: config.toml)")
 }

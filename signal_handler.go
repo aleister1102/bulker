@@ -34,7 +34,7 @@ func (sh *SignalHandler) Stop() {
 	sh.once.Do(func() {
 		sh.mu.Lock()
 		defer sh.mu.Unlock()
-		
+
 		if !sh.closed {
 			signal.Stop(sh.interruptChan)
 			close(sh.interruptChan)

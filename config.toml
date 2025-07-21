@@ -47,6 +47,15 @@
     examples = [
       "bulker run sleep_echo -i input.txt -o output.txt"
     ]
+    
+  [tools.test_args]
+    description = "Test tool to see how arguments are parsed"
+    mode = "single"
+    command = "echo Arguments: {args} Input: {input} > {output}"
+    examples = [
+      "bulker run test_args -i input.txt -o output.txt -e '--arg1 --arg2 value'",
+      "bulker run test_args -i input.txt -o output.txt -e '--timeout 30 --retries 3'"
+    ]
 
   [tools.x8]
     description = "Hidden parameters discovery suite"
@@ -57,7 +66,8 @@
     auto_optimizations = ["-W 5", "-c 2", "--follow-redirects", "--mimic-browser"]
     examples = [
       "bulker run x8 -i urls.txt -o params.txt",
-      "bulker run x8 -i urls.txt -o params.txt -e '--strict' -e '--verify'"
+      "bulker run x8 -i urls.txt -o params.txt -e '--strict --verify'",
+      "bulker run x8 -i urls.txt -o params.txt -e '--timeout 30 --depth 3'"
     ]
 
   [tools.cewler]
