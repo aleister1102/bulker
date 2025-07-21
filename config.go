@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -30,15 +31,49 @@ type ConfigManager struct {
 	config Config
 }
 
+// findConfigFile looks for config file in the following order:
+// 1. Current directory
+// 2. User's home directory
+func findConfigFile(customPath string) (string, error) {
+	// If custom path is provided and exists, use it
+	if customPath != "" && customPath != "config.toml" {
+		if _, err := os.Stat(customPath); err == nil {
+			return customPath, nil
+		}
+		return "", fmt.Errorf("custom config file %s not found", customPath)
+	}
+
+	// Check current directory first
+	currentDir, err := os.Getwd()
+	if err == nil {
+		configPath := filepath.Join(currentDir, "config.toml")
+		if _, err := os.Stat(configPath); err == nil {
+			return configPath, nil
+		}
+	}
+
+	// Check home directory
+	homeDir, err := os.UserHomeDir()
+	if err == nil {
+		configPath := filepath.Join(homeDir, "config.toml")
+		if _, err := os.Stat(configPath); err == nil {
+			return configPath, nil
+		}
+	}
+
+	return "", fmt.Errorf("config file not found in current directory or home directory")
+}
+
 // NewConfigManager creates a new config manager
 func NewConfigManager(configPath string) (*ConfigManager, error) {
-	// Check if config file exists
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("config file %s not found", configPath)
+	// Find the actual config file path
+	actualConfigPath, err := findConfigFile(configPath)
+	if err != nil {
+		return nil, err
 	}
 
 	// Read config file
-	data, err := os.ReadFile(configPath)
+	data, err := os.ReadFile(actualConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}

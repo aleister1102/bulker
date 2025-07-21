@@ -47,10 +47,10 @@ func init() {
 	// Change short flag from -w to -t to avoid conflict with wordlist flag (-w in tools like ffuf)
 	runCmd.Flags().IntVarP(&workers, "threads", "t", 4, "Number of parallel threads")
 	runCmd.Flags().StringArrayVarP(&extraArgs, "extra-args", "e", []string{}, "Extra arguments to pass to the tool (supports multiple args in one flag: -e '--strict --verify')")
-	runCmd.Flags().StringVarP(&configFile, "config", "c", "config.toml", "Path to custom config file")
+	runCmd.Flags().StringVarP(&configFile, "config", "c", "", "Path to custom config file")
 	runCmd.Flags().StringVarP(&wordlist, "wordlist", "w", "", "Path to wordlist file (for tools like ffuf)")
 
-	listCmd.Flags().StringVarP(&configFile, "config", "c", "config.toml", "Path to custom config file")
+	listCmd.Flags().StringVarP(&configFile, "config", "c", "", "Path to custom config file")
 }
 
 func main() {
@@ -215,5 +215,10 @@ func listTools(cmd *cobra.Command, args []string) {
 	fmt.Println("  -e, --extra-args       Extra arguments to pass to the tool")
 	fmt.Println("                         Examples: -e '--strict --verify' or -e '--timeout 30'")
 	fmt.Println("  -w, --wordlist <file>  Wordlist file (required for ffuf)")
-	fmt.Println("  -c, --config <file>    Custom config file (default: config.toml)")
+	fmt.Println("  -c, --config <file>    Custom config file")
+	fmt.Println("")
+	fmt.Println("Config file priority (config.toml):")
+	fmt.Println("  1. Current directory")
+	fmt.Println("  2. User's home directory")
+	fmt.Println("  Use -c flag to specify a custom path")
 }
