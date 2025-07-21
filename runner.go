@@ -335,22 +335,25 @@ func (r *Runner) runTask(taskIndex int) {
 
 	cleanupFunc := func() {
 		if tempOutputFile != "" {
-			content, err := os.ReadFile(tempOutputFile)
-			if err == nil {
-				// Trim header if it exists
-				lines := strings.Split(string(content), "\n")
-				var contentToWrite string
-				if len(lines) > 0 && r.toolConfig.Header != "" && strings.TrimSpace(lines[0]) == r.toolConfig.Header {
-					contentToWrite = strings.Join(lines[1:], "\n")
-				} else {
-					contentToWrite = string(content)
+			// If the tool writes its main output to stdout, we skip merging the temp file but still remove it.
+			if !r.toolConfig.UseStdout {
+				content, err := os.ReadFile(tempOutputFile)
+				if err == nil {
+					// Trim header if it exists
+					lines := strings.Split(string(content), "\n")
+					var contentToWrite string
+					if len(lines) > 0 && r.toolConfig.Header != "" && strings.TrimSpace(lines[0]) == r.toolConfig.Header {
+						contentToWrite = strings.Join(lines[1:], "\n")
+					} else {
+						contentToWrite = string(content)
+					}
+
+					trimmedContent := strings.Trim(contentToWrite, "\x00")
+					r.writeToOutput(trimmedContent)
+
+				} else if !os.IsNotExist(err) {
+					LogError("Failed to read temp output file %s: %v", tempOutputFile, err)
 				}
-
-				trimmedContent := strings.Trim(contentToWrite, "\x00")
-				r.writeToOutput(trimmedContent)
-
-			} else if !os.IsNotExist(err) {
-				LogError("Failed to read temp output file %s: %v", tempOutputFile, err)
 			}
 			os.Remove(tempOutputFile)
 		}
@@ -416,8 +419,9 @@ func (r *Runner) runTask(taskIndex int) {
 		return
 	}
 
-	// For all external tools, we expect them to write to a file, so we ignore their stdout.
-	r.runTaskWithCommand(taskIndex, cmdParts, true)
+	// Decide whether to capture stdout based on tool configuration
+	ignoreStdout := !r.toolConfig.UseStdout
+	r.runTaskWithCommand(taskIndex, cmdParts, ignoreStdout)
 }
 
 func (r *Runner) writeToOutput(content string) {
@@ -665,8 +669,8 @@ func (r *Runner) runTaskWithCommand(taskIndex int, cmdParts []string, ignoreStdo
 					return
 				default:
 					line := scanner.Text()
-					// Write each line immediately to the shared output file
-					r.writeToOutput(line)
+					// Write each line immediately to the shared output file, preserving line breaks
+					r.writeToOutput(line + "\n")
 				}
 			}
 		}()

@@ -5,6 +5,7 @@
     # 'multiple': Chunks input file for tools that accept a file path.
     mode = "multiple"
     command = "httpx -l {input} -o {output} {args}"
+    use_stdout = true
 
   [tools.arjun]
     description = "HTTP parameter discovery tool"
@@ -39,23 +40,6 @@
       "bulker run echo -i input.txt -o output.txt",
       "bulker run echo -i input.txt -o output.txt -e \"--append\""
     ]
-    
-  [tools.sleep_echo]
-    description = "Echo with delay for testing graceful shutdown"
-    mode = "single"
-    command = "ping 127.0.0.1 -n 3 >nul && echo {input} > {output}"
-    examples = [
-      "bulker run sleep_echo -i input.txt -o output.txt"
-    ]
-    
-  [tools.test_args]
-    description = "Test tool to see how arguments are parsed"
-    mode = "single"
-    command = "echo Arguments: {args} Input: {input} > {output}"
-    examples = [
-      "bulker run test_args -i input.txt -o output.txt -e '--arg1 --arg2 value'",
-      "bulker run test_args -i input.txt -o output.txt -e '--timeout 30 --retries 3'"
-    ]
 
   [tools.x8]
     description = "Hidden parameters discovery suite"
@@ -66,8 +50,7 @@
     auto_optimizations = ["-W 5", "-c 2", "--follow-redirects", "--mimic-browser"]
     examples = [
       "bulker run x8 -i urls.txt -o params.txt",
-      "bulker run x8 -i urls.txt -o params.txt -e '--strict --verify'",
-      "bulker run x8 -i urls.txt -o params.txt -e '--timeout 30 --depth 3'"
+      "bulker run x8 -i urls.txt -o params.txt -e '--strict' -e '--verify'"
     ]
 
   [tools.cewler]
@@ -124,7 +107,7 @@
     description = "Subdomain enumeration via massdns"
     mode = "multiple"
     command = "shuffledns -list {input} -o {output} {auto_optimizations} {args}"
-    auto_optimizations = ["-r resolvers.txt", "-t 10000", "-silent"]
+    auto_optimizations = ["-r resolvers.txt"]
     examples = [
       "bulker run shuffledns -i subdomains.txt -o valid.txt -t 4",
       "bulker run shuffledns -i subdomains.txt -o valid.txt -t 6 -e '-r' -e 'clean-resolvers.txt'"

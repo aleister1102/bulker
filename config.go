@@ -18,7 +18,10 @@ type ToolConfig struct {
 	Command           string   `toml:"command"`
 	AutoOptimizations []string `toml:"auto_optimizations"`
 	Header            string   `toml:"header"`
-	Examples          []string `toml:"examples"`
+	// UseStdout specifies whether the tool writes its main output to stdout instead of (or in addition to) the file given by -o/redirect.
+	// When true Bulker will capture stdout and stream it to the final output file rather than expecting to read the temporary file.
+	UseStdout bool     `toml:"use_stdout"`
+	Examples  []string `toml:"examples"`
 }
 
 // Config holds all tool configurations
