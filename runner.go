@@ -35,6 +35,7 @@ type Runner struct {
 	outputPath    string
 	inputLines    []string // Store input lines directly
 	cancelChan    chan struct{}
+	cancelOnce    sync.Once
 	// Performance tracking
 	startTime       time.Time
 	endTime         time.Time
@@ -136,6 +137,7 @@ func (r *Runner) Run() error {
 
 	// Setup signal handling
 	r.signalHandler.Setup(r.handleInterrupt)
+	defer r.signalHandler.Stop()
 
 	// Backup existing output file if it exists
 	if err := r.backupOutputFile(); err != nil {
@@ -160,7 +162,12 @@ func (r *Runner) Run() error {
 	if r.toolConfig.Header != "" {
 		r.outputFile.WriteString(r.toolConfig.Header + "\n")
 	}
-	defer r.outputFile.Close()
+	defer func() {
+		if r.outputFile != nil {
+			r.outputFile.Sync()
+			r.outputFile.Close()
+		}
+	}()
 
 	// Read input file directly into memory
 	err = r.readInputFile()
@@ -307,6 +314,15 @@ func (r *Runner) runTasks() error {
 }
 
 func (r *Runner) runTask(taskIndex int) {
+	// Check if cancelled before starting
+	select {
+	case <-r.cancelChan:
+		LogWarn("Task %d cancelled before start.", taskIndex)
+		r.updateTaskStatus(taskIndex, TaskFailed)
+		return
+	default:
+	}
+
 	r.mu.Lock()
 	task := &r.tasks[taskIndex]
 	task.Status = TaskRunning
@@ -330,7 +346,7 @@ func (r *Runner) runTask(taskIndex int) {
 					contentToWrite = string(content)
 				}
 
-				trimmedContent := strings.Trim(contentToWrite, "\\x00")
+				trimmedContent := strings.Trim(contentToWrite, "\x00")
 				r.writeToOutput(trimmedContent)
 
 			} else if !os.IsNotExist(err) {
@@ -343,6 +359,15 @@ func (r *Runner) runTask(taskIndex int) {
 		}
 	}
 	defer cleanupFunc()
+
+	// Check cancellation again before processing
+	select {
+	case <-r.cancelChan:
+		LogWarn("Task %d cancelled during setup.", taskIndex)
+		r.updateTaskStatus(taskIndex, TaskFailed)
+		return
+	default:
+	}
 
 	// Tất cả các tool đều được xử lý thông qua config
 
@@ -422,7 +447,7 @@ func (r *Runner) monitor() error {
 			}
 		case <-r.signalHandler.InterruptChan():
 			LogWarn("Received interrupt signal, cleaning up...")
-			close(r.cancelChan) // Also trigger cancellation on Ctrl+C
+			r.cancelTasks()
 			return r.handleInterrupt()
 		case <-r.cancelChan:
 			LogWarn("Cancellation signal received, waiting for tasks to terminate...")
@@ -458,6 +483,12 @@ func (r *Runner) checkAllCompleted() bool {
 	return completedCount+failedCount == total
 }
 
+func (r *Runner) cancelTasks() {
+	r.cancelOnce.Do(func() {
+		close(r.cancelChan)
+	})
+}
+
 func (r *Runner) updateTaskStatus(taskIndex int, status TaskStatus) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -471,13 +502,49 @@ func (r *Runner) updateTaskStatus(taskIndex int, status TaskStatus) {
 func (r *Runner) handleInterrupt() error {
 	LogInfo("Handling interrupt, stopping all tasks...")
 
+	// Cancel all running tasks
+	r.cancelTasks()
+
+	// Wait for tasks to finish gracefully (with timeout)
+	timeout := time.After(5 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeout:
+			LogWarn("Timeout waiting for tasks to finish, forcing shutdown...")
+			goto cleanup
+		case <-ticker.C:
+			if r.checkAllTasksStopped() {
+				LogInfo("All tasks stopped gracefully")
+				goto cleanup
+			}
+		}
+	}
+
+cleanup:
 	// Close output file
 	if r.outputFile != nil {
+		r.outputFile.Sync() // Ensure all data is written
 		r.outputFile.Close()
+		r.outputFile = nil
 	}
 
 	LogInfo("Partial results saved to: %s", r.outputPath)
 	return nil
+}
+
+func (r *Runner) checkAllTasksStopped() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	for _, task := range r.tasks {
+		if task.Status == TaskRunning {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Runner) displayPerformanceMetrics() {
@@ -533,6 +600,15 @@ func (r *Runner) runTaskWithCommand(taskIndex int, cmdParts []string, ignoreStdo
 	task := &r.tasks[taskIndex]
 	r.mu.RUnlock()
 
+	// Check cancellation before starting command
+	select {
+	case <-r.cancelChan:
+		LogWarn("Task %d cancelled before command execution.", task.ID)
+		r.updateTaskStatus(taskIndex, TaskFailed)
+		return
+	default:
+	}
+
 	// Create command
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
@@ -571,6 +647,10 @@ func (r *Runner) runTaskWithCommand(taskIndex int, cmdParts []string, ignoreStdo
 	// Read output line by line and write directly to shared output file
 	var wg sync.WaitGroup
 
+	// Channel to signal goroutines to stop
+	done := make(chan struct{})
+	defer close(done)
+
 	if !ignoreStdout {
 		wg.Add(1)
 		go func() {
@@ -578,9 +658,16 @@ func (r *Runner) runTaskWithCommand(taskIndex int, cmdParts []string, ignoreStdo
 			defer stdout.Close()
 			scanner := bufio.NewScanner(stdout)
 			for scanner.Scan() {
-				line := scanner.Text()
-				// Write each line immediately to the shared output file
-				r.writeToOutput(line)
+				select {
+				case <-done:
+					return
+				case <-r.cancelChan:
+					return
+				default:
+					line := scanner.Text()
+					// Write each line immediately to the shared output file
+					r.writeToOutput(line)
+				}
 			}
 		}()
 	} else {
@@ -589,9 +676,16 @@ func (r *Runner) runTaskWithCommand(taskIndex int, cmdParts []string, ignoreStdo
 			defer stdout.Close()
 			scanner := bufio.NewScanner(stdout)
 			for scanner.Scan() {
-				line := scanner.Text()
-				// Hiển thị trực tiếp stdout của tool ra console
-				fmt.Println(line)
+				select {
+				case <-done:
+					return
+				case <-r.cancelChan:
+					return
+				default:
+					line := scanner.Text()
+					// Hiển thị trực tiếp stdout của tool ra console
+					fmt.Println(line)
+				}
 			}
 		}()
 	}
@@ -603,18 +697,45 @@ func (r *Runner) runTaskWithCommand(taskIndex int, cmdParts []string, ignoreStdo
 		defer stderr.Close()
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
-			line := scanner.Text()
-			// Hiển thị stderr realtime để user biết có lỗi gì
-			LogTask(task.ID, "[STDERR] %s", line)
+			select {
+			case <-done:
+				return
+			case <-r.cancelChan:
+				return
+			default:
+				line := scanner.Text()
+				// Hiển thị stderr realtime để user biết có lỗi gì
+				LogTask(task.ID, "[STDERR] %s", line)
+			}
+		}
+	}()
+
+	// Monitor for cancellation and kill process if needed
+	go func() {
+		select {
+		case <-r.cancelChan:
+			if cmd.Process != nil {
+				LogWarn("Killing process %d for task %d due to cancellation", cmd.Process.Pid, task.ID)
+				cmd.Process.Kill()
+			}
+		case <-done:
+			// Command finished naturally
 		}
 	}()
 
 	// Wait for command to complete
 	if err := cmd.Wait(); err != nil {
-		LogError("Task %d failed: %v", task.ID, err)
-		r.updateTaskStatus(taskIndex, TaskFailed)
-		// Signal other tasks to cancel
-		close(r.cancelChan)
+		// Check if error is due to cancellation
+		select {
+		case <-r.cancelChan:
+			LogWarn("Task %d was cancelled", task.ID)
+			r.updateTaskStatus(taskIndex, TaskFailed)
+		default:
+			LogError("Task %d failed: %v", task.ID, err)
+			r.updateTaskStatus(taskIndex, TaskFailed)
+			// Signal other tasks to cancel only if it's not already cancelled
+			r.cancelTasks()
+		}
 	} else {
 		// Wait for output goroutine to finish before marking as completed
 		wg.Wait()

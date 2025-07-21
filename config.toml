@@ -39,6 +39,14 @@
       "bulker run echo -i input.txt -o output.txt",
       "bulker run echo -i input.txt -o output.txt -e \"--append\""
     ]
+    
+  [tools.sleep_echo]
+    description = "Echo with delay for testing graceful shutdown"
+    mode = "single"
+    command = "ping 127.0.0.1 -n 3 >nul && echo {input} > {output}"
+    examples = [
+      "bulker run sleep_echo -i input.txt -o output.txt"
+    ]
 
   [tools.x8]
     description = "Hidden parameters discovery suite"

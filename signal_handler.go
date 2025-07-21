@@ -3,12 +3,16 @@ package main
 import (
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 )
 
 type SignalHandler struct {
 	interruptChan chan os.Signal
 	cleanupFunc   func() error
+	once          sync.Once
+	closed        bool
+	mu            sync.RWMutex
 }
 
 func NewSignalHandler() *SignalHandler {
@@ -27,6 +31,14 @@ func (sh *SignalHandler) InterruptChan() <-chan os.Signal {
 }
 
 func (sh *SignalHandler) Stop() {
-	signal.Stop(sh.interruptChan)
-	close(sh.interruptChan)
+	sh.once.Do(func() {
+		sh.mu.Lock()
+		defer sh.mu.Unlock()
+		
+		if !sh.closed {
+			signal.Stop(sh.interruptChan)
+			close(sh.interruptChan)
+			sh.closed = true
+		}
+	})
 }
