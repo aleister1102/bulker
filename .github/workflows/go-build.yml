@@ -7,11 +7,15 @@ on:
 
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        go-version: ["1.21"]
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+        exclude:
+          # Exclude arm64 for windows (not commonly used)
+          - goos: windows
+            goarch: arm64
 
     steps:
       - name: Checkout source
@@ -20,23 +24,43 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: "1.21"
 
-      - name: Build (Windows)
-        if: runner.os == 'Windows'
-        run: go build -v -o bulker.exe .
-
-      - name: Build (Unix)
-        if: runner.os != 'Windows'
-        run: go build -v -o bulker .
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BINARY_NAME="bulker-${{ matrix.goos }}-${{ matrix.goarch }}.exe"
+          else
+            BINARY_NAME="bulker-${{ matrix.goos }}-${{ matrix.goarch }}"
+          fi
+          
+          echo "Building for ${{ matrix.goos }}/${{ matrix.goarch }}"
+          go build -v -ldflags="-s -w" -o "$BINARY_NAME" .
+          
+          # Set executable permissions for Unix systems
+          if [ "${{ matrix.goos }}" != "windows" ]; then
+            chmod +x "$BINARY_NAME"
+          fi
+          
+          # Create checksum
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$BINARY_NAME" > "$BINARY_NAME.sha256"
+          fi
+          
+          # Show file info
+          ls -la "$BINARY_NAME"*
+          file "$BINARY_NAME" || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bulker-${{ runner.os }}
+          name: bulker-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
-            bulker*
-          retention-days: 1
+            bulker-${{ matrix.goos }}-${{ matrix.goarch }}*
+          retention-days: 7
 
   release:
     runs-on: ubuntu-latest
@@ -51,12 +75,30 @@ jobs:
         with:
           path: artifacts
 
-      - name: Check file structure
-        run: ls -R artifacts
+      - name: Check artifacts structure
+        run: |
+          echo "=== Artifacts structure ==="
+          find artifacts -type f -exec ls -la {} \;
+          echo "=== File types ==="
+          find artifacts -name "bulker-*" -not -name "*.sha256" -exec file {} \;
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          
+          # Copy all binaries and checksums to release directory
+          find artifacts -name "bulker-*" -exec cp {} release/ \;
+          
+          # Create combined checksum file
+          cd release
+          cat *.sha256 > checksums.txt || true
+          
+          echo "=== Release files ==="
+          ls -la
 
       - name: Create Release and Upload Binaries
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            artifacts/bulker-Linux/bulker
-            artifacts/bulker-Windows/bulker.exe 
+          files: release/*
+          generate_release_notes: true
+          draft: false 

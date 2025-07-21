@@ -1,4 +1,8 @@
-bulker.exe
 *.txt
-output/
 *.csv
+*.exe
+*.bat
+output/
+dist/
+build.sh
+BUILD.md

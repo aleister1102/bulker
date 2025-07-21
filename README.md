@@ -2,17 +2,47 @@
 
 A parallel runner for security tools with automatic optimisations.
 
-## Usage
+## Installation
 
-**Build**
+### Download Pre-built Binaries
+Download from [GitHub Releases](https://github.com/aleister1102/bulker/releases):
+
+**Linux:**
+```bash
+# Download and install
+curl -L -o bulker https://github.com/aleister1102/bulker/releases/latest/download/bulker-linux-amd64
+chmod +x bulker
+sudo mv bulker /usr/local/bin/  # Optional: add to PATH
+```
+
+**Windows:**
+```powershell
+# Download bulker-windows-amd64.exe from releases page
+# Or use PowerShell:
+Invoke-WebRequest -Uri "https://github.com/aleister1102/bulker/releases/latest/download/bulker-windows-amd64.exe" -OutFile "bulker.exe"
+```
+
+**macOS:**
+```bash
+# Download and install
+curl -L -o bulker https://github.com/aleister1102/bulker/releases/latest/download/bulker-darwin-amd64
+chmod +x bulker
+sudo mv bulker /usr/local/bin/  # Optional: add to PATH
+```
+
+### Build from Source
 ```bash
 git clone https://github.com/aleister1102/bulker.git
 cd bulker
-go build -o bulker # or bulker.exe for Windows
-```
-*Binaries are also attached to GitHub releases.*
+go build -o bulker  # or bulker.exe for Windows
 
-**Run**
+# Or use build scripts for cross-platform:
+./build.sh         # Linux/macOS
+.\build.bat        # Windows
+```
+
+## Usage
+
 ```bash
 # List all tools from config.toml
 bulker list
